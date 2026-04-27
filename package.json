@@ -1,0 +1,69 @@
+{
+  "name": "pi-lcm-memory",
+  "version": "0.0.1",
+  "description": "Persistent cross-session semantic memory for Pi — a hybrid (FTS5 + vector) recall layer on top of pi-lcm.",
+  "type": "module",
+  "license": "MIT",
+  "author": "sharkone <sharkone@en-mousse.org>",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "pi-lcm",
+    "context-management",
+    "memory",
+    "semantic-search",
+    "embeddings",
+    "sqlite",
+    "sqlite-vec",
+    "fts5",
+    "rrf",
+    "hybrid-search",
+    "transformers-js",
+    "ai-agent",
+    "developer-tools"
+  ],
+  "files": [
+    "index.ts",
+    "src/**/*.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "PLAN.md",
+    "ROADMAP.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sharkone/pi-lcm-memory.git"
+  },
+  "homepage": "https://github.com/sharkone/pi-lcm-memory#readme",
+  "bugs": {
+    "url": "https://github.com/sharkone/pi-lcm-memory/issues"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --dir test",
+    "test:watch": "vitest --dir test",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "sqlite-vec": "^0.1.9",
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "peerDependencies": {
+    "pi-lcm": "^0.1.3",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "vitest": "^3.0.0",
+    "typescript": "^5.7.0"
+  }
+}
