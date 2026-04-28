@@ -7,6 +7,7 @@ import type { Retriever } from "./retrieval.js";
 import type { Indexer } from "./indexer.js";
 import type { MemoryConfig } from "./config.js";
 import type { Diagnostics } from "./diagnostics.js";
+import type { Embedder } from "./embeddings/embedder.js";
 import { listModelNames } from "./embeddings/model-registry.js";
 import { saveSettings, type SettingsScope } from "./settings.js";
 
@@ -15,6 +16,7 @@ export interface CommandState {
   retriever: Retriever | null;
   indexer: Indexer | null;
   diagnostics: Diagnostics | null;
+  embedder: Embedder | null;
   config: MemoryConfig;
   cwd: string | null;
   settingsScope: SettingsScope;
@@ -53,6 +55,8 @@ export async function handleMemoryCommand(
     case "events":
     case "log":
       return printEvents(state, ctx);
+    case "worker":
+      return printWorker(state, ctx);
     default:
       ctx.ui.notify(`unknown subcommand: ${sub}. Try /memory help.`, "warning");
   }
@@ -63,6 +67,7 @@ function printHelp(ctx: any): void {
     [
       "/memory stats               — counts, model, dim, db size",
       "/memory status              — sweep cycles, busy, last error, interval",
+      "/memory worker              — embedder worker state (debug)",
       "/memory search <query>      — ad-hoc lcm_recall",
       "/memory reindex             — wipe & re-embed everything",
       "/memory clear [--yes]       — drop all embeddings (sweep will rebuild)",
@@ -71,6 +76,36 @@ function printHelp(ctx: any): void {
       "/memory settings            — open settings panel",
       "",
       "models: " + listModelNames().join(", "),
+    ].join("\n"),
+    "info",
+  );
+}
+
+function printWorker(state: CommandState, ctx: any): void {
+  if (!state.embedder) {
+    ctx.ui.notify("pi-lcm-memory not initialized.", "warning");
+    return;
+  }
+  const s = state.embedder.state();
+  const url = state.embedder.workerUrl();
+  const dl =
+    s.totalBytes != null
+      ? `${(s.downloadedBytes / 1024 / 1024).toFixed(1)}/${(s.totalBytes / 1024 / 1024).toFixed(1)} MB`
+      : `${(s.downloadedBytes / 1024 / 1024).toFixed(1)} MB`;
+  ctx.ui.notify(
+    [
+      `embedder worker:`,
+      `  ready:        ${s.ready}`,
+      `  loading:      ${s.loading}`,
+      `  downloading:  ${s.downloading}  (${dl})`,
+      `  thread id:    ${s.workerThreadId ?? "—"}`,
+      `  worker pid:   ${s.workerPid ?? "—"}`,
+      `  node version: ${s.workerNodeVersion ?? "—"}`,
+      `  threads:      ${s.intraOpNumThreads ?? "—"}`,
+      `  model:        ${s.model}`,
+      `  dims:         ${s.dims}`,
+      `  worker url:   ${url ?? "—"}`,
+      `  last error:   ${s.error ?? "none"}`,
     ].join("\n"),
     "info",
   );

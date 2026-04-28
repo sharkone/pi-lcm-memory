@@ -109,10 +109,11 @@ have everything re-embedded in the background, with a footer status visible. ✅
 
 ## Phase 5 — Stretches (any order, opt-in)
 
-- [ ] **Worker-thread embedder** (high priority). ONNX inference currently
-      blocks the event loop on the main thread; even with q8 + small batches
-      this causes brief TUI hitches during large backfills. Move embedder
-      into `worker_threads`; main thread posts batches and awaits results.
+- [x] **Worker-thread embedder** — shipped. `src/embeddings/worker.mjs` owns
+      the pipeline in a `worker_threads` thread; main thread is never
+      blocked. Multi-core ORT (`intraOpNumThreads = cpus()-1`, capped at 8).
+      Zero-copy `ArrayBuffer` transfers. Live test asserts semantic ordering
+      and ~1880 embeds/sec on an M-class laptop.
 - [ ] Cross-encoder re-ranker (`Xenova/ms-marco-MiniLM-L-6-v2`) on top-N
       hybrid results (config flag).
 - [ ] "Memory cards" (manually saved snippets via `/memory save` and a tool).

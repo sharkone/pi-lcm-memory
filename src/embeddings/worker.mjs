@@ -24,7 +24,7 @@
  *     { type: 'error', id?, message, stack? }
  */
 
-import { parentPort } from "node:worker_threads";
+import { parentPort, threadId } from "node:worker_threads";
 import { availableParallelism } from "node:os";
 
 if (!parentPort) {
@@ -36,6 +36,16 @@ let pipe = null;
 let modelName = "";
 let pipeDims = null;
 let intraOpNumThreads = 1;
+
+// Tell the parent we're alive immediately so it can confirm the worker
+// actually spawned (vs. silently failed to construct).
+parentPort.postMessage({
+  type: "hello",
+  threadId,
+  pid: process.pid,
+  nodeVersion: process.version,
+  cores: availableParallelism(),
+});
 
 /** @param {object} opts */
 async function init(opts) {

@@ -64,6 +64,7 @@ export default function (pi: ExtensionAPI) {
       retriever,
       indexer,
       diagnostics,
+      embedder,
       config,
       cwd,
       settingsScope,
@@ -94,21 +95,56 @@ export default function (pi: ExtensionAPI) {
       quantize: config.embeddingQuantize,
       cacheDir: config.modelCacheDir,
     });
+    // State for throttled status & periodic download notifications.
+    let lastStatusUpdate = 0;
+    let lastDownloadAnnounceMb = 0;
+    let lastNotifiedFile = "";
+
     embedder.setListener({
+      onWorkerHello: ({ threadId, pid, nodeVersion, cores }) => {
+        diagnostics?.log("worker_hello", { threadId, pid, nodeVersion, cores });
+        if (config.debugMode) {
+          ctx.ui?.notify?.(
+            `[pi-lcm-memory] worker spawned (thread ${threadId}, pid ${pid}, node ${nodeVersion}, ${cores} cores).`,
+            "info",
+          );
+        }
+      },
       onProgress: ({ file, loaded, total }) => {
         if (!modelDownloadAnnounced) {
           modelDownloadAnnounced = true;
-          const sz = total ? `${(total / 1024 / 1024).toFixed(1)} MB` : "unknown size";
+          const sz = total ? `${(total / 1024 / 1024).toFixed(1)} MB` : "size unknown";
           ctx.ui?.notify?.(
-            `[pi-lcm-memory] downloading embedding model ${config.embeddingModel} (${sz})…`,
+            `[pi-lcm-memory] downloading ${file || "model files"} (${sz}). One-time setup; this can take a minute on slow networks.`,
             "info",
           );
-          diagnostics?.log("model_download_start", { model: config.embeddingModel, total });
+          diagnostics?.log("model_download_start", { model: config.embeddingModel, total, file });
+          lastNotifiedFile = file;
         }
-        // throttle status updates by relying on render cadence; setStatus is cheap.
-        updateStatus(store, indexer, embedder, ctx);
-        if (config.debugMode && total && loaded === total) {
-          ctx.ui?.notify?.(`[pi-lcm-memory] downloaded ${file}`, "info");
+        if (file && file !== lastNotifiedFile) {
+          lastNotifiedFile = file;
+          ctx.ui?.notify?.(`[pi-lcm-memory] now fetching ${file}…`, "info");
+          // Reset MB counter for the new file.
+          lastDownloadAnnounceMb = 0;
+        }
+        // Periodic "still downloading" notifications keyed off MB downloaded
+        // so the user never feels the UI is dead during a long fetch. Every
+        // 10 MB of fresh bytes since the last notify.
+        const mb = Math.floor(loaded / 1024 / 1024);
+        if (mb >= lastDownloadAnnounceMb + 10) {
+          lastDownloadAnnounceMb = mb;
+          const totalLabel = total ? ` / ${(total / 1024 / 1024).toFixed(1)} MB` : "";
+          ctx.ui?.notify?.(
+            `[pi-lcm-memory] downloaded ${mb} MB${totalLabel}…`,
+            "info",
+          );
+        }
+        // Throttle setStatus: the footer can update at most ~4 Hz to avoid
+        // saturating the TUI render queue.
+        const now = Date.now();
+        if (now - lastStatusUpdate >= 250) {
+          lastStatusUpdate = now;
+          updateStatus(store, indexer, embedder, ctx);
         }
       },
       onLoaded: () => {
@@ -118,19 +154,17 @@ export default function (pi: ExtensionAPI) {
           dims: embedder?.knownDims() ?? null,
           intraOpNumThreads: st?.intraOpNumThreads ?? null,
         });
-        if (st?.intraOpNumThreads && st.intraOpNumThreads > 1) {
-          ctx.ui?.notify?.(
-            `[pi-lcm-memory] embedder ready (${config.embeddingModel}, ${st.intraOpNumThreads} cores). Backfill starting.`,
-            "info",
-          );
-        }
+        ctx.ui?.notify?.(
+          `[pi-lcm-memory] embedder ready (${config.embeddingModel}, ${st?.intraOpNumThreads ?? "?"} cores). Backfill starting.`,
+          "info",
+        );
         updateStatus(store, indexer, embedder, ctx);
         // Kick a sweep so backfill begins immediately once weights are warm.
         indexer?.kick();
       },
       onError: (msg) => {
         diagnostics?.log("model_error", { model: config.embeddingModel, error: msg });
-        ctx.ui?.notify?.(`[pi-lcm-memory] model load failed: ${msg}`, "warning");
+        ctx.ui?.notify?.(`[pi-lcm-memory] embedder failed: ${msg}`, "error");
       },
     });
 

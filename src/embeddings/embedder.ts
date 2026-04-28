@@ -35,11 +35,15 @@ export interface EmbedderState {
   downloadedBytes: number;
   totalBytes: number | null;
   intraOpNumThreads: number | null;
+  workerThreadId: number | null;
+  workerPid: number | null;
+  workerNodeVersion: string | null;
   error: string | null;
 }
 
 export interface EmbedderEventListener {
   onProgress?: (e: { file: string; loaded: number; total: number | null }) => void;
+  onWorkerHello?: (e: { threadId: number; pid: number; nodeVersion: string; cores: number }) => void;
   onLoaded?: () => void;
   onError?: (msg: string) => void;
 }
@@ -50,7 +54,7 @@ interface PendingEmbed {
 }
 
 interface WorkerMessage {
-  type: "progress" | "loaded" | "result" | "error";
+  type: "hello" | "progress" | "loaded" | "result" | "error";
   id?: number;
   payload?: unknown;
   dims?: number;
@@ -59,7 +63,13 @@ interface WorkerMessage {
   message?: string;
   stack?: string;
   model?: string;
+  threadId?: number;
+  pid?: number;
+  nodeVersion?: string;
+  cores?: number;
 }
+
+const WARMUP_TIMEOUT_MS = 120_000;
 
 export class Embedder {
   private opts: EmbedderOptions;
@@ -78,6 +88,11 @@ export class Embedder {
   private pending = new Map<number, PendingEmbed>();
   private initResolve: (() => void) | null = null;
   private initReject: ((e: Error) => void) | null = null;
+  private warmupTimer: NodeJS.Timeout | null = null;
+  private workerThreadId: number | null = null;
+  private workerPid: number | null = null;
+  private workerNodeVersion: string | null = null;
+  private lastWorkerUrl: string | null = null;
 
   constructor(opts: EmbedderOptions) {
     this.opts = opts;
@@ -104,8 +119,16 @@ export class Embedder {
       downloadedBytes: this.downloadedBytes,
       totalBytes: this.totalBytes,
       intraOpNumThreads: this.intraOpNumThreads,
+      workerThreadId: this.workerThreadId,
+      workerPid: this.workerPid,
+      workerNodeVersion: this.workerNodeVersion,
       error: this.error,
     };
+  }
+
+  /** Where we tried to load worker.mjs from, for debugging. */
+  workerUrl(): string | null {
+    return this.lastWorkerUrl;
   }
 
   /** Spawn worker + load pipeline. Idempotent. */
@@ -174,6 +197,10 @@ export class Embedder {
       mkdirSync(cacheDir, { recursive: true });
 
       const workerUrl = new URL("./worker.mjs", import.meta.url);
+      this.lastWorkerUrl = workerUrl.href;
+      // Synchronous: if this throws (bad path, missing native module, etc),
+      // we propagate immediately. The hello message confirms the worker
+      // actually started executing.
       this.worker = new Worker(workerUrl);
       this.attachWorkerHandlers(this.worker);
 
@@ -181,6 +208,22 @@ export class Embedder {
         this.initResolve = resolve;
         this.initReject = reject;
       });
+
+      // Watchdog: if the worker doesn't ack 'loaded' within the timeout,
+      // surface an error rather than hanging forever.
+      this.warmupTimer = setTimeout(() => {
+        if (this.initReject) {
+          const msg =
+            `embedder warmup timed out after ${WARMUP_TIMEOUT_MS / 1000}s ` +
+            `(downloading=${this.downloading} bytes=${this.downloadedBytes})`;
+          this.error = msg;
+          this.listener?.onError?.(msg);
+          this.initReject(new Error(msg));
+          this.initReject = null;
+          this.initResolve = null;
+        }
+      }, WARMUP_TIMEOUT_MS);
+      if (typeof this.warmupTimer.unref === "function") this.warmupTimer.unref();
 
       this.worker.postMessage({
         type: "init",
@@ -206,6 +249,10 @@ export class Embedder {
       throw e;
     } finally {
       this.loading = false;
+      if (this.warmupTimer) {
+        clearTimeout(this.warmupTimer);
+        this.warmupTimer = null;
+      }
     }
   }
 
@@ -214,6 +261,17 @@ export class Embedder {
       if (!raw || typeof raw !== "object") return;
       const msg = raw as WorkerMessage;
       switch (msg.type) {
+        case "hello":
+          if (typeof msg.threadId === "number") this.workerThreadId = msg.threadId;
+          if (typeof msg.pid === "number") this.workerPid = msg.pid;
+          if (typeof msg.nodeVersion === "string") this.workerNodeVersion = msg.nodeVersion;
+          this.listener?.onWorkerHello?.({
+            threadId: msg.threadId ?? -1,
+            pid: msg.pid ?? -1,
+            nodeVersion: msg.nodeVersion ?? "",
+            cores: msg.cores ?? 0,
+          });
+          break;
         case "progress":
           this.handleProgress(msg.payload);
           break;

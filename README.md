@@ -101,10 +101,14 @@ project DB is shared.
 - We open the same file. Our additive tables: `memory_vec` (sqlite-vec virtual
   table, dim parametric to model), `memory_index` (join + denormalized text),
   `memory_meta` (kv bookkeeping + last 200 diagnostic events).
+- **Embedding runs in a worker thread.** All ONNX inference happens in
+  `src/embeddings/worker.mjs` via `worker_threads`, so the Pi event loop is
+  never blocked. ORT is configured with `intraOpNumThreads = cpus()-1`
+  (capped at 8), saturating cores during backfill.
 - Two ingestion paths run concurrently:
-  - **Hook path**: `message_end` → embed → `INSERT OR IGNORE`.
+  - **Hook path**: `message_end` → embed (worker) → `INSERT OR IGNORE`.
   - **Sweep path**: every 30 s (adaptive), scan for un-indexed pi-lcm rows and
-    process them in batches of 32 with single inference calls per batch.
+    process them in batches of 32 with single worker inference calls.
 - `lcm_recall(query)` runs FTS5 + vector kNN and merges them with Reciprocal
   Rank Fusion (`k=60`).
 - A session-start primer renders prior session count, last date, and the most
@@ -117,9 +121,10 @@ project DB is shared.
 
 - **Disk**: model weights ~30–80 MB depending on model. SQLite grows roughly
   ~2 KB per indexed message at default dim (384). 100k messages ≈ 80 MB.
-- **Memory**: embedder is lazy-loaded on first use. Idle = ~0.
-- **CPU**: backfill embeds ~50–200 messages/sec on Apple silicon. The hook
-  path runs off the response thread.
+- **Memory**: embedder worker is lazy-spawned on first use. Idle = ~0.
+- **CPU**: backfill embeds **~1500–2000 messages/sec** on Apple Silicon
+  (8-thread q8). All work happens in a worker thread; the Pi TUI is never
+  blocked.
 
 ## Local dev
 

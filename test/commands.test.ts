@@ -38,9 +38,10 @@ function makeCtx(): { ctx: any; notifies: NotifyCall[] } {
 function makeState(t: TestDb, cfg: MemoryConfig, cwd: string): CommandState {
   const store = new MemoryStore(t.db);
   const bridge = new PiLcmBridge(t.db);
+  const fake = new FakeEmbedder(8);
   const indexer = new Indexer({
     store,
-    embedder: new FakeEmbedder(8) as any,
+    embedder: fake as any,
     bridge,
     config: cfg,
     conversationId: () => null,
@@ -52,6 +53,7 @@ function makeState(t: TestDb, cfg: MemoryConfig, cwd: string): CommandState {
     retriever: null,
     indexer,
     diagnostics: diag,
+    embedder: fake as any,
     config: { ...cfg },
     cwd,
     settingsScope: "project",
