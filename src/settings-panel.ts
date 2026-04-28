@@ -65,6 +65,13 @@ const ROWS: Row[] = [
     values: ["off", "heuristic", "always"] as const,
   },
   {
+    type: "enum",
+    key: "embeddingQuantize",
+    label: "Quantize",
+    description: "q8 (default, 4× smaller, fast). fp32 = full precision (slow).",
+    values: ["auto", "fp32", "fp16", "q8", "int8", "uint8", "q4", "q4f16"] as const,
+  },
+  {
     type: "number",
     key: "autoRecallTopK",
     label: "Auto-recall top-K",

@@ -77,10 +77,10 @@ describe("Indexer batched sweep + adaptive backoff", () => {
     await idx.tick();
 
     expect(store.stats().byMessage).toBe(80);
-    // Batches of 32 → expect 3 calls (32 + 32 + 16). Single warmup call may also exist
-    // but our spy embeds, not warmups.
+    // Batches of 8 → expect 10 calls (8 × 10 = 80). Smaller batches let the
+    // TUI render between calls; quantized weights make each call cheap.
     expect(emb.calls.length).toBeLessThan(80);
-    expect(emb.calls.length).toBe(3);
+    expect(emb.calls.length).toBe(10);
     expect(emb.calls.reduce((a, b) => a + b, 0)).toBe(80);
   });
 

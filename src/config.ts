@@ -13,11 +13,18 @@ import { readFileSync, existsSync } from "node:fs";
 
 export type AutoRecallMode = "off" | "heuristic" | "always";
 
+/**
+ * Embedding dtype. Names mirror @huggingface/transformers v3 DataType.
+ * On Node CPU, default "q8" gives ~4× smaller weights and ~2-4× faster
+ * inference vs fp32, with negligible quality loss for retrieval.
+ */
+export type EmbeddingDtype = "auto" | "fp32" | "fp16" | "q8" | "int8" | "uint8" | "q4" | "q4f16";
+
 export interface MemoryConfig {
   enabled: boolean;
   dbDir: string;
   embeddingModel: string;
-  embeddingQuantize: "auto" | "fp32" | "int8";
+  embeddingQuantize: EmbeddingDtype;
   indexMessages: boolean;
   indexSummaries: boolean;
   skipToolIO: boolean;
@@ -38,7 +45,10 @@ export const DEFAULTS: MemoryConfig = {
   // Mirror pi-lcm's default dbDir so we open the same file.
   dbDir: join(homedir(), ".pi", "agent", "lcm"),
   embeddingModel: "Xenova/bge-small-en-v1.5",
-  embeddingQuantize: "auto",
+  // q8 = quantized variant of Xenova models (model_quantized.onnx). Much
+  // faster on CPU than fp32; available for the vast majority of Xenova
+  // feature-extraction models including bge-small/MiniLM/gte-small.
+  embeddingQuantize: "q8",
   indexMessages: true,
   indexSummaries: true,
   skipToolIO: true,
@@ -134,7 +144,7 @@ export function resolveConfig(ctx: ResolveContext = {}): MemoryConfig {
       globalMem.embeddingModel ??
       DEFAULTS.embeddingModel,
     embeddingQuantize:
-      (envStr("PI_LCM_MEMORY_QUANTIZE") as MemoryConfig["embeddingQuantize"] | undefined) ??
+      (envStr("PI_LCM_MEMORY_QUANTIZE") as EmbeddingDtype | undefined) ??
       projectMem.embeddingQuantize ??
       globalMem.embeddingQuantize ??
       DEFAULTS.embeddingQuantize,

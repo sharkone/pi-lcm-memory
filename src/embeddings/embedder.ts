@@ -15,9 +15,11 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { lookupModel } from "./model-registry.js";
 
+import type { EmbeddingDtype } from "../config.js";
+
 export interface EmbedderOptions {
   model: string;
-  quantize: "auto" | "fp32" | "int8";
+  quantize: EmbeddingDtype;
   cacheDir: string | null;
   pooling?: "mean" | "cls";
   normalize?: boolean;
@@ -124,8 +126,12 @@ export class Embedder {
       const pipelineOpts: Record<string, unknown> = {
         progress_callback: (p: any) => this.handleProgress(p),
       };
-      if (this.opts.quantize === "int8") pipelineOpts.dtype = "int8";
-      else if (this.opts.quantize === "fp32") pipelineOpts.dtype = "fp32";
+      // "auto" → don't pass dtype (Transformers.js picks the device default;
+      // Node CPU defaults to fp32 with a console warning). Any other named
+      // dtype is passed through verbatim.
+      if (this.opts.quantize !== "auto") {
+        pipelineOpts.dtype = this.opts.quantize;
+      }
 
       const pipe = await tf.pipeline("feature-extraction", this.opts.model, pipelineOpts);
       this.pipe = pipe as Pipeline;
