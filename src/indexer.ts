@@ -35,13 +35,20 @@ interface PendingRow {
   args: Omit<InsertArgs, "embedding" | "model_dims">;
 }
 
-// Inference now runs in a worker_threads thread (see embedder.ts +
-// worker.mjs), so the main thread is never blocked by ONNX. We can use
-// a healthy batch size for throughput; the worker pumps through them
-// while the TUI stays responsive.
+// Inference runs in a worker thread (see embedder.ts + worker.mjs), so the
+// main thread isn't blocked by ONNX. SQLite writes are batched into a single
+// transaction per batch (see store.insertBatch) so we acquire the WAL write
+// lock once instead of N times — cuts contention with concurrent writers
+// (notably pi-lcm) by ~30×. We yield to the event loop between batches so
+// the TUI renders even during long backfills.
 const SWEEP_BATCH = 32;
 const SWEEP_BACKOFF_MIN_MS = 5_000;
 const SWEEP_BACKOFF_MAX_MS = 5 * 60_000;
+
+/** Yield to the event loop so TUI input/render can interleave with backfill. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 export class Indexer {
   private deps: IndexerDeps;
@@ -211,6 +218,10 @@ export class Indexer {
       if (batch.length >= SWEEP_BATCH) {
         await this.embedAndStoreBatch(batch);
         batch = [];
+        // Even with batched inserts, bursts of activity can starve the TUI.
+        // setImmediate gives the event loop a chance to render keystrokes,
+        // status updates, etc., between sweep batches.
+        await yieldToEventLoop();
       }
     }
     if (batch.length > 0 && !this.stopped) await this.embedAndStoreBatch(batch);
@@ -316,18 +327,41 @@ export class Indexer {
     const dims = this.deps.embedder.knownDims() ?? 0;
     if (dims === 0) throw new Error("embedder has no dim after warmup");
 
-    // Skip rows that are already indexed (raced with hook path).
-    const fresh = batch.filter((p) => !this.deps.store.hasContentHash(p.args.content_hash));
+    // Bulk-skip rows already indexed (raced with hook path or another sweep).
+    // One IN() query instead of N hasContentHash calls.
+    const present = this.deps.store.whichHashesPresent(
+      batch.map((p) => p.args.content_hash),
+    );
+    const fresh = batch.filter((p) => !present.has(p.args.content_hash));
     if (fresh.length === 0) return;
 
+    const tEmbed0 = Date.now();
     const vectors = await this.deps.embedder.embed(fresh.map((p) => p.text));
+    const tEmbedMs = Date.now() - tEmbed0;
+
+    // Build the InsertArgs[] (with embedding + model_dims attached) and
+    // hand them to the store as a single transaction.
+    const items: InsertArgs[] = [];
     for (let i = 0; i < fresh.length; i++) {
       const v = vectors[i];
       const p = fresh[i];
       if (!v || !p) continue;
-      this.deps.store.insert({ ...p.args, embedding: v, model_dims: dims });
-      this.indexedThisCycle += 1;
-      this.indexedTotal += 1;
+      items.push({ ...p.args, embedding: v, model_dims: dims });
+    }
+
+    const tInsert0 = Date.now();
+    this.deps.store.insertBatch(items);
+    const tInsertMs = Date.now() - tInsert0;
+    this.indexedThisCycle += items.length;
+    this.indexedTotal += items.length;
+
+    // Diagnostic: surface batch timings so we can see embed-vs-SQL split.
+    if (items.length >= 8 || tEmbedMs > 100 || tInsertMs > 100) {
+      this.deps.log?.("sweep_batch", {
+        size: items.length,
+        embedMs: tEmbedMs,
+        insertMs: tInsertMs,
+      });
     }
   }
 
