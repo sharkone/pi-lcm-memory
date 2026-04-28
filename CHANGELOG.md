@@ -78,3 +78,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   down cleanly. Wired into `index.ts` `resetState()`.
 - `EmbedderState` now exposes `intraOpNumThreads`. `model_loaded`
   diagnostic carries the thread count; init notification mentions it.
+
+### Fixed (Phase 5 — stabilization round)
+
+- **Infinite-loop in `messagesNotInMemoryIndex` (THE big one).**
+  The bridge generator yielded every row matching `mi.vec_rowid IS NULL`.
+  Tool-I/O / empty-content rows were dropped by `bridgeMessageToPending`
+  via `continue`, never inserted into `memory_index`, and so kept matching
+  the LEFT JOIN forever. The for-of loop never reached a 32-row batch —
+  no `await embedAndStoreBatch` ever fired, no event-loop yield, TUI
+  starved at 100% of one core. Diagnosed via the side-channel tracer
+  (2.18M `iter_chunk` events, zero `batch_start`).
+  Three-part fix:
+  1. SQL-level filter excludes tool-I/O roles and empty content directly
+     in the bridge query.
+  2. Rowid cursor (`m.rowid > :lastRowid` advanced before yield) so any
+     row that slips through the filter and gets dropped by the consumer
+     cannot be reconsidered in the same sweep.
+  3. Safety yield in `processBatched` every 1024 iterated items regardless
+     of batch fill — future bugs of this shape can't freeze the TUI again.
+  Two regression tests in `test/indexer.batch.test.ts` (200 pure tool-I/O
+  rows must terminate <2s; mixed 30 real + 150 tool-I/O indexes 30).
+
+- **Dedupe leak: many-to-one pi-lcm id → vec_rowid mapping (schema v2).**
+  `memory_index.content_hash` is UNIQUE, so two pi-lcm messages with
+  identical content shared one embedding row — but only the first
+  `pi_lcm_msg_id` was recorded. The bridge's LEFT JOIN kept yielding the
+  duplicate id on every sweep; the indexer kept dropping it as a content
+  duplicate; rinse, repeat.
+  Schema v2 introduces side tables `memory_index_msg(pi_lcm_msg_id PK,
+  vec_rowid)` and `memory_index_sum(pi_lcm_sum_id PK, vec_rowid)`. Multiple
+  ids can map to the same vec_rowid. Migration backfills from existing
+  `memory_index` rows. Bridge LEFT JOINs against the side tables. Indexer
+  records mappings for both fresh inserts AND content-hash dupes via new
+  `store.recordPresentMappings()`. New regression test verifies both ids
+  for identical content map to one vec_rowid and the bridge yields zero
+  rows on subsequent sweeps.
+
+- **`/memory settings` crashed: `factory is not a function`.**
+  pi's `ctx.ui.custom` API is `(factory, options)` where the factory is
+  `(tui, theme, keybindings, done) => Component`. We were passing an
+  object literal `{ overlay, component, onClose }`. Refactored
+  `openSettingsPanel` to construct the panel inside a factory function,
+  wired the panel's `onClose` to the `done` callback so Q/Esc cleanly
+  closes the overlay.
+
+- **Lock contention slashed: one transaction per batch.**
+  `MemoryStore.insert()` ran 32 separate `db.transaction()` calls per
+  batch, each grabbing the WAL write lock. With pi-lcm concurrently
+  writing in another connection, this stacked busy_timeout retries.
+  New `insertBatch(items[])` method does a single IMMEDIATE transaction
+  for the whole batch with reused prepared statements. Bench: 200 inserts
+  go from 15 ms → 1 ms (15× in isolation; much larger under contention).
+  New `whichHashesPresent(hashes[])` does a bulk `IN()` lookup instead
+  of N separate hash checks; returns Map<hash, vec_rowid> so the indexer
+  can record dedupe mappings without a second query.
+
+### Added (debugging infrastructure)
+
+- **Side-channel tracer** (`src/trace.ts`). Synchronous file-based event
+  log enabled via `PI_LCM_MEMORY_TRACE=1` (default path
+  `/tmp/pi-lcm-memory.<pid>.trace.log`) or `PI_LCM_MEMORY_TRACE=/path`.
+  The worker writes to the same file (O_APPEND is safe across PIDs); each
+  line carries `pid` + `src` for timeline correlation. Diagnoses freezes
+  that block the main thread: SQLite-backed diagnostics can't run when
+  the JS thread is stuck in a sync C call, but `fs.writeSync` snapshots
+  every step right before the freeze. This is the tool that pinpointed
+  the infinite-loop bug above. Notable trace events: `tick_start`,
+  `warmup_start/end`, `process_start/end`, `iter_chunk`, `batch_start`,
+  `batch_dedupe`, `batch_embed_start/end`, `batch_insert_start/end`,
+  `batch_done`, `safety_yield`, `embed_post`, `embed_resolve`,
+  `worker_boot`, `init_pipeline_start/end`.
+
+- **120s warmup watchdog**. If the embedder doesn't reach `loaded` in
+  two minutes, it surfaces a clear error instead of hanging forever.
+  Includes diagnostic state (`downloading=Y bytes=N`).
+
+- **`/memory worker` debug command** prints embedder/worker state:
+  ready, loading, downloading + bytes, thread id, worker pid, Node
+  version, intra-op thread count, model, dims, resolved worker URL,
+  and last error.
+
+- **Per-MB download progress notifications.** During a long model
+  download the user sees `[pi-lcm-memory] downloaded N MB…` every
+  10 MB so the UI never feels frozen. `setStatus` is throttled to 4 Hz
+  so progress events can't flood the TUI render queue.
+
+- **Worker hello**. The worker posts a `{ type: "hello", threadId, pid,
+  nodeVersion, cores }` message immediately on first execution. Confirms
+  the worker actually spawned (vs. silently failed to construct) and
+  feeds `/memory worker` state.

@@ -107,24 +107,61 @@ have everything re-embedded in the background, with a footer status visible. ✅
 
 ---
 
-## Phase 5 — Stretches (any order, opt-in)
+## Phase 5 — Stabilization & stretches (any order, opt-in)
 
-- [x] **Worker-thread embedder** — shipped. `src/embeddings/worker.mjs` owns
-      the pipeline in a `worker_threads` thread; main thread is never
-      blocked. Multi-core ORT (`intraOpNumThreads = cpus()-1`, capped at 8).
-      Zero-copy `ArrayBuffer` transfers. Live test asserts semantic ordering
-      and ~1880 embeds/sec on an M-class laptop.
-- [ ] Cross-encoder re-ranker (`Xenova/ms-marco-MiniLM-L-6-v2`) on top-N
-      hybrid results (config flag).
-- [ ] "Memory cards" (manually saved snippets via `/memory save` and a tool).
-      *Mirrors the prior local attempt; revisit user need.*
-- [ ] Cross-project / workspace-wide recall (multi-DB query layer).
-- [ ] Code / file content indexing (separate `code_vec` table; AST-aware
-      chunking).
+### Stabilization round (shipped)
 
-- [ ] MCP wrapper exposing recall to Claude Code (Q3 deferred path).
-- [ ] Eviction / retention policy (e.g., archive after N days, keep summaries).
-- [ ] Edit / redact memory (with audit log).
+- [x] **Worker-thread embedder.** `src/embeddings/worker.mjs` owns the
+      pipeline in a `worker_threads` thread; main thread is never blocked
+      by ONNX. Multi-core ORT (`intraOpNumThreads = cpus()-1`, capped at
+      8). Zero-copy `ArrayBuffer` transfers. Live test asserts semantic
+      ordering and ~1880 embeds/sec on an M-class laptop.
+- [x] **Single-transaction batched inserts.** `store.insertBatch(items[])`
+      with IMMEDIATE locking + reused prepared statements. 15× faster
+      in isolation; eliminates lock-acquisition stacking under concurrent
+      pi-lcm writes. New `whichHashesPresent` returns Map<hash, vec_rowid>
+      via a single IN() query.
+- [x] **Side-channel tracer (`PI_LCM_MEMORY_TRACE=1`).** Synchronous
+      file-based event log that survives main-thread freezes; main and
+      worker write to the same file. Documented set of events covering
+      tick / batch / embed lifecycle.
+- [x] **Schema v2: many-to-one id mapping.** `memory_index_msg` and
+      `memory_index_sum` side tables. Closes the dedupe leak where two
+      pi-lcm messages with identical content shared one embedding but
+      only one id was recorded — the other leaked through every sweep.
+      Migration backfills from existing `memory_index` rows.
+- [x] **Bridge generator: rowid cursor + SQL filter.** Iteration is
+      forward-only by `m.rowid` and skipped roles / empty content are
+      filtered at the SQL level. Combined with the safety yield in
+      `processBatched` every 1024 items, the infinite-loop class of
+      bugs is structurally impossible. Two regression tests cover it.
+- [x] **Settings panel API fix.** `ctx.ui.custom(factory, options)` shape
+      — was passing an object literal, pi crashed at `factory is not a
+      function`. Now constructed inside a factory closure with `done`
+      wired to `onClose`.
+- [x] **120s warmup watchdog + `/memory worker` command + per-MB
+      download notifications + worker hello message** for visibility
+      during model downloads.
+
+### Quality / functionality stretches (planned, not yet shipped)
+
+- [ ] **Cross-encoder re-ranker** (`Xenova/ms-marco-MiniLM-L-6-v2`) on
+      top-N hybrid results behind a config flag. Biggest *quality* win
+      for retrieval; especially useful for auto-recall where the top hit
+      must be on-topic. Same worker, second pipeline, opt-in.
+- [ ] **Memory cards** (manually saved snippets via `/memory save` and a
+      tool). Mirrors the prior local attempt; useful for "always remember
+      X about this project" patterns.
+- [ ] **Cross-project / workspace-wide recall** (multi-DB query layer).
+      Useful when topics recur across projects.
+- [ ] **Code / file content indexing** (separate `code_vec` table;
+      AST-aware chunking).
+- [ ] **MCP wrapper** exposing recall to Claude Code (Q3 deferred path).
+- [ ] **Eviction / retention policy** (e.g., archive after N days, keep
+      summaries). Important once a heavy user accumulates 100k+ rows.
+- [ ] **Edit / redact memory** (with audit log).
+- [ ] **`PI_LCM_MEMORY_TRACE` toggleable from `/memory trace on|off`** so
+      no relaunch is needed to enable the tracer.
 
 ---
 
