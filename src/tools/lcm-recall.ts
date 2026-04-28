@@ -85,12 +85,12 @@ function formatHits(hits: RecallHit[], query: string): string {
     const when = h.session_started ? new Date(h.session_started * 1000).toISOString().slice(0, 10) : "—";
     const tag =
       h.source_kind === "summary"
-        ? `summary D${h.depth ?? "?"}${h.pi_lcm_sum_id ? ` ${h.pi_lcm_sum_id.slice(0, 8)}` : ""}`
-        : `${h.role ?? "msg"}${h.pi_lcm_msg_id ? ` ${h.pi_lcm_msg_id.slice(0, 8)}` : ""}`;
+        ? `summary D${h.depth ?? "?"}${h.pi_lcm_sum_id ? ` ${h.pi_lcm_sum_id}` : ""}`
+        : `${h.role ?? "msg"}${h.pi_lcm_msg_id ? ` ${h.pi_lcm_msg_id}` : ""}`;
     lines.push(`${i + 1}. [${when}] [${tag}] score=${h.score.toFixed(4)}`);
     lines.push(`   ${h.snippet}`);
   });
   lines.push("");
-  lines.push("Use lcm_expand(summaryId) to recover full text from any summary id.");
+  lines.push("Use lcm_expand(summary_id) with the full UUID shown above to recover full text from any summary.");
   return lines.join("\n");
 }
