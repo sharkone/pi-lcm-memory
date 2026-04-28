@@ -372,16 +372,38 @@ export class Indexer {
     if (dims === 0) throw new Error("embedder has no dim after warmup");
 
     // Bulk-skip rows already indexed (raced with hook path or another sweep).
-    // One IN() query instead of N hasContentHash calls.
+    // One IN() query instead of N hasContentHash calls. Returned as a Map
+    // so we can register the dedupe mappings into memory_index_msg/sum
+    // — otherwise duplicate-content rows leak forever.
     const tDedupe0 = Date.now();
     const present = this.deps.store.whichHashesPresent(
       batch.map((p) => p.args.content_hash),
     );
+    const dupes = batch.filter((p) => present.has(p.args.content_hash));
     const fresh = batch.filter((p) => !present.has(p.args.content_hash));
     const dedupeMs = Date.now() - tDedupe0;
-    trace("batch_dedupe", { batchIdx, in: batch.length, fresh: fresh.length, ms: dedupeMs });
+    trace("batch_dedupe", {
+      batchIdx,
+      in: batch.length,
+      fresh: fresh.length,
+      dupes: dupes.length,
+      ms: dedupeMs,
+    });
+
+    // Record id->vec_rowid mappings for the dupes so the bridge stops
+    // re-yielding them on every sweep. Idempotent (INSERT OR IGNORE).
+    if (dupes.length > 0) {
+      this.deps.store.recordPresentMappings(
+        dupes.map((d) => ({
+          vec_rowid: present.get(d.args.content_hash)!,
+          pi_lcm_msg_id: d.args.pi_lcm_msg_id ?? null,
+          pi_lcm_sum_id: d.args.pi_lcm_sum_id ?? null,
+        })),
+      );
+    }
+
     if (fresh.length === 0) {
-      trace("batch_skip", { batchIdx, reason: "all_present" });
+      trace("batch_skip", { batchIdx, reason: "all_present", mapped: dupes.length });
       return;
     }
 

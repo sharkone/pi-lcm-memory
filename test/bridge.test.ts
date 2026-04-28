@@ -49,11 +49,16 @@ describe("PiLcmBridge", () => {
     const msgs = [...b.messagesNotInMemoryIndex(10)];
     expect(msgs.map((m) => m.id).sort()).toEqual(["m1", "m2", "m3"]);
 
-    // After "indexing" m1, we should no longer see it.
+    // After "indexing" m1, we should no longer see it. The bridge now
+    // LEFT JOINs against memory_index_msg (the many-to-one mapping), so
+    // we have to populate that table too — simulating what insertBatch does.
     t.db.prepare(
       `INSERT INTO memory_index(vec_rowid, source_kind, content_hash, pi_lcm_msg_id, snippet, text_full, model_name, model_dims)
        VALUES (?, 'message', ?, ?, ?, ?, 'test-fake', 8)`,
     ).run(1, "h-m1", "m1", "alpha auth bug", "alpha auth bug");
+    t.db.prepare(
+      "INSERT INTO memory_index_msg(pi_lcm_msg_id, vec_rowid) VALUES (?, ?)",
+    ).run("m1", 1);
 
     const remaining = [...b.messagesNotInMemoryIndex(10)].map((m) => m.id);
     expect(remaining).not.toContain("m1");

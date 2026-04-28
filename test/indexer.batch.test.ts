@@ -131,6 +131,59 @@ describe("Indexer batched sweep + adaptive backoff", () => {
     expect(store.stats().byMessage).toBe(0);
   });
 
+  it("two messages with identical content map both ids to one vec_rowid (regression: dedupe leak)", async () => {
+    // Pre-fix: when two pi-lcm messages had identical content, only the
+    // first id landed on memory_index.pi_lcm_msg_id; the second leaked
+    // through every sweep because the LEFT JOIN never matched it.
+    // Post-fix: memory_index_msg records both ids -> the same vec_rowid.
+    t = makeTestDb();
+    applyPiLcmSchema(t.db);
+    await setupVecAndMigrate(t.db, 8);
+    if (!isVecLoaded()) return;
+
+    seedConversation(t.db, { id: "c1" });
+    // Same role + same text on two messages → same content_hash.
+    seedMessage(t.db, { id: "m_a", conv: "c1", role: "user", text: "identical content", ts: 1, seq: 0 });
+    seedMessage(t.db, { id: "m_b", conv: "c1", role: "user", text: "identical content", ts: 2, seq: 1 });
+
+    const store = new MemoryStore(t.db);
+    const bridge = new PiLcmBridge(t.db);
+    const emb = new SpyEmbedder(8);
+    const idx = new Indexer({
+      store,
+      embedder: emb as any,
+      bridge,
+      config: baseConfig,
+      conversationId: () => "c1",
+      sessionStartedAt: () => 1,
+    });
+
+    await idx.tick();
+    // Only ONE embedding generated (one unique content_hash).
+    expect(store.stats().byMessage).toBe(1);
+    expect(emb.calls.length).toBe(1);
+    expect(emb.calls[0]).toBe(2); // sweep batched both into the embed call
+
+    // BOTH ids must be mapped to that single vec_rowid in the side table.
+    const mappings = t.db
+      .prepare("SELECT pi_lcm_msg_id, vec_rowid FROM memory_index_msg ORDER BY pi_lcm_msg_id")
+      .all() as { pi_lcm_msg_id: string; vec_rowid: number }[];
+    expect(mappings.map((m) => m.pi_lcm_msg_id)).toEqual(["m_a", "m_b"]);
+    expect(mappings[0]!.vec_rowid).toBe(mappings[1]!.vec_rowid);
+
+    // Subsequent sweeps must NOT re-yield either id (the leak fix).
+    const before = store.stats().byMessage;
+    const callsBefore = emb.calls.length;
+    await idx.tick();
+    await idx.tick();
+    expect(store.stats().byMessage).toBe(before); // no new embeddings
+    expect(emb.calls.length).toBe(callsBefore);
+
+    // And messagesNotInMemoryIndex must yield zero rows now.
+    const remaining = [...bridge.messagesNotInMemoryIndex(10)];
+    expect(remaining.length).toBe(0);
+  });
+
   it("sweep with mixed tool-I/O and real messages indexes only the real ones and terminates", async () => {
     t = makeTestDb();
     applyPiLcmSchema(t.db);

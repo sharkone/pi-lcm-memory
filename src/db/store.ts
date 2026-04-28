@@ -66,6 +66,8 @@ export class MemoryStore {
   private stmtSelectByHash: Stmt | null = null;
   private stmtInsertVec: Stmt | null = null;
   private stmtInsertIndex: Stmt | null = null;
+  private stmtInsertMsgMap: Stmt | null = null;
+  private stmtInsertSumMap: Stmt | null = null;
   private stmtSelectByVecRowid: Stmt | null = null;
   private stmtSelectByMsgId: Stmt | null = null;
   private stmtKnn: Stmt | null = null;
@@ -88,9 +90,19 @@ export class MemoryStore {
          role, depth, snippet, text_full, token_count, model_name, model_dims
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
+    // OR IGNORE so concurrent paths (hook + sweep) can both safely insert
+    // the same id->vec_rowid mapping; first one wins.
+    this.stmtInsertMsgMap = this.db.prepare(
+      "INSERT OR IGNORE INTO memory_index_msg(pi_lcm_msg_id, vec_rowid) VALUES (?, ?)",
+    );
+    this.stmtInsertSumMap = this.db.prepare(
+      "INSERT OR IGNORE INTO memory_index_sum(pi_lcm_sum_id, vec_rowid) VALUES (?, ?)",
+    );
     this.stmtSelectByVecRowid = this.db.prepare("SELECT * FROM memory_index WHERE vec_rowid = ?");
     this.stmtSelectByMsgId = this.db.prepare(
-      "SELECT * FROM memory_index WHERE pi_lcm_msg_id = ? LIMIT 1",
+      `SELECT mi.* FROM memory_index_msg imm
+         JOIN memory_index mi ON mi.vec_rowid = imm.vec_rowid
+        WHERE imm.pi_lcm_msg_id = ? LIMIT 1`,
     );
     this.stmtHasHash = this.db.prepare(
       "SELECT 1 AS ok FROM memory_index WHERE content_hash = ? LIMIT 1",
@@ -129,6 +141,8 @@ export class MemoryStore {
     const stmtSelect = this.stmtSelectByHash!;
     const stmtVec = this.stmtInsertVec!;
     const stmtIndex = this.stmtInsertIndex!;
+    const stmtMsgMap = this.stmtInsertMsgMap!;
+    const stmtSumMap = this.stmtInsertSumMap!;
 
     const out: (number | null)[] = new Array(items.length).fill(null);
     const txn = this.db.transaction((batch: InsertArgs[]) => {
@@ -137,28 +151,37 @@ export class MemoryStore {
         const existing = stmtSelect.get(a.content_hash) as
           | { vec_rowid: number }
           | undefined;
+        let vecRowid: number;
         if (existing) {
-          out[i] = existing.vec_rowid;
-          continue;
+          // Content already indexed under another pi_lcm id. Reuse its
+          // vec_rowid and (below) record the new id->vec mapping so the
+          // bridge stops re-yielding this row on every sweep.
+          vecRowid = existing.vec_rowid;
+        } else {
+          const r = stmtVec.run(encodeVector(a.embedding));
+          vecRowid = Number(r.lastInsertRowid);
+          stmtIndex.run(
+            vecRowid,
+            a.source_kind,
+            a.content_hash,
+            a.pi_lcm_msg_id ?? null,
+            a.pi_lcm_sum_id ?? null,
+            a.conversation_id ?? null,
+            a.session_started ?? null,
+            a.role ?? null,
+            a.depth ?? null,
+            a.snippet,
+            a.text_full,
+            a.token_count ?? null,
+            a.model_name,
+            a.model_dims,
+          );
         }
-        const r = stmtVec.run(encodeVector(a.embedding));
-        const vecRowid = Number(r.lastInsertRowid);
-        stmtIndex.run(
-          vecRowid,
-          a.source_kind,
-          a.content_hash,
-          a.pi_lcm_msg_id ?? null,
-          a.pi_lcm_sum_id ?? null,
-          a.conversation_id ?? null,
-          a.session_started ?? null,
-          a.role ?? null,
-          a.depth ?? null,
-          a.snippet,
-          a.text_full,
-          a.token_count ?? null,
-          a.model_name,
-          a.model_dims,
-        );
+        // Record the pi-lcm id -> vec_rowid mapping in the side table.
+        // Always done, regardless of whether we just inserted or matched
+        // an existing row — this is what closes the dedupe leak.
+        if (a.pi_lcm_msg_id) stmtMsgMap.run(a.pi_lcm_msg_id, vecRowid);
+        if (a.pi_lcm_sum_id) stmtSumMap.run(a.pi_lcm_sum_id, vecRowid);
         out[i] = vecRowid;
       }
     });
@@ -176,22 +199,48 @@ export class MemoryStore {
     return !!row;
   }
 
-  /** Bulk variant of hasContentHash for batched filtering. Returns Set of present hashes. */
-  whichHashesPresent(hashes: string[]): Set<string> {
-    if (hashes.length === 0) return new Set();
-    // Chunk into reasonable IN() lists; SQLite's bind parameter limit is
-    // 32766 by default but we keep it conservative.
-    const present = new Set<string>();
+  /**
+   * Bulk hash lookup. Returns a Map<content_hash, vec_rowid> of rows that
+   * are already indexed. The vec_rowid is needed by the indexer so it can
+   * record dedupe mappings into memory_index_msg / memory_index_sum without
+   * re-embedding.
+   */
+  whichHashesPresent(hashes: string[]): Map<string, number> {
+    if (hashes.length === 0) return new Map();
+    const present = new Map<string, number>();
     const CHUNK = 256;
     for (let i = 0; i < hashes.length; i += CHUNK) {
       const slice = hashes.slice(i, i + CHUNK);
       const placeholders = slice.map(() => "?").join(",");
       const rows = this.db
-        .prepare(`SELECT content_hash FROM memory_index WHERE content_hash IN (${placeholders})`)
-        .all(...slice) as { content_hash: string }[];
-      for (const r of rows) present.add(r.content_hash);
+        .prepare(
+          `SELECT content_hash, vec_rowid FROM memory_index WHERE content_hash IN (${placeholders})`,
+        )
+        .all(...slice) as { content_hash: string; vec_rowid: number }[];
+      for (const r of rows) present.set(r.content_hash, r.vec_rowid);
     }
     return present;
+  }
+
+  /**
+   * Record id->vec_rowid mappings into the side tables for rows we already
+   * have an embedding for (deduplicated by content_hash). Idempotent via
+   * INSERT OR IGNORE: replaying is safe.
+   */
+  recordPresentMappings(
+    items: { vec_rowid: number; pi_lcm_msg_id?: string | null; pi_lcm_sum_id?: string | null }[],
+  ): void {
+    if (items.length === 0) return;
+    this.prepStmts();
+    const stmtMsg = this.stmtInsertMsgMap!;
+    const stmtSum = this.stmtInsertSumMap!;
+    const txn = this.db.transaction((batch: typeof items) => {
+      for (const it of batch) {
+        if (it.pi_lcm_msg_id) stmtMsg.run(it.pi_lcm_msg_id, it.vec_rowid);
+        if (it.pi_lcm_sum_id) stmtSum.run(it.pi_lcm_sum_id, it.vec_rowid);
+      }
+    });
+    (txn as unknown as { immediate: (b: typeof items) => void }).immediate(items);
   }
 
   getRow(vecRowid: number): IndexRow | null {
@@ -262,13 +311,20 @@ export class MemoryStore {
   }
 
   clearAll(): void {
-    if (!isVecLoadedFor(this.db)) {
+    const wipe = () => {
       this.db.prepare("DELETE FROM memory_index").run();
+      // Side tables exist on schema v2+; guard against tests that apply v1
+      // directly without running migrations.
+      try { this.db.prepare("DELETE FROM memory_index_msg").run(); } catch { /* table missing */ }
+      try { this.db.prepare("DELETE FROM memory_index_sum").run(); } catch { /* table missing */ }
+    };
+    if (!isVecLoadedFor(this.db)) {
+      wipe();
       return;
     }
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM memory_vec").run();
-      this.db.prepare("DELETE FROM memory_index").run();
+      wipe();
     })();
   }
 }

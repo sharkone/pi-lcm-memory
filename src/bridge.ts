@@ -77,12 +77,17 @@ export class PiLcmBridge {
   ): Generator<PiLcmMessage> {
     if (!this.hasMessages) return;
     const skipToolIO = opts.skipToolIO ?? true;
+    // LEFT JOIN against memory_index_msg (the many-to-one mapping table),
+    // not memory_index. memory_index has a UNIQUE content_hash, so two
+    // messages with identical content share a row — only one of their
+    // pi_lcm_msg_ids was recorded on memory_index, the rest leaked.
+    // memory_index_msg records every id that maps to a vec_rowid.
     const stmt = this.db.prepare(
       `SELECT m.rowid AS message_rowid,
               m.id, m.conversation_id, m.role, m.content_text, m.timestamp, m.seq
          FROM messages m
-         LEFT JOIN memory_index mi ON mi.pi_lcm_msg_id = m.id
-         WHERE mi.vec_rowid IS NULL
+         LEFT JOIN memory_index_msg imm ON imm.pi_lcm_msg_id = m.id
+         WHERE imm.vec_rowid IS NULL
            AND m.content_text IS NOT NULL
            AND length(m.content_text) > 0
            AND (? = 0 OR m.role NOT IN ('toolResult', 'bashExecution'))
@@ -109,12 +114,13 @@ export class PiLcmBridge {
 
   *summariesNotInMemoryIndex(batchSize: number): Generator<PiLcmSummary> {
     if (!this.hasSummaries) return;
+    // Same many-to-one pattern as messages — see above.
     const stmt = this.db.prepare(
       `SELECT s.rowid AS summary_rowid,
               s.id, s.conversation_id, s.depth, s.text, s.created_at
          FROM summaries s
-         LEFT JOIN memory_index mi ON mi.pi_lcm_sum_id = s.id
-         WHERE mi.vec_rowid IS NULL
+         LEFT JOIN memory_index_sum ims ON ims.pi_lcm_sum_id = s.id
+         WHERE ims.vec_rowid IS NULL
            AND s.text IS NOT NULL
            AND length(s.text) > 0
            AND s.rowid > ?
