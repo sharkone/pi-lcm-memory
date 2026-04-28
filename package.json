@@ -58,7 +58,8 @@
     "pi-lcm": "^0.1.3",
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-ai": "*",
-    "@sinclair/typebox": "*"
+    "@mariozechner/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
