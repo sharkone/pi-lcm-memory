@@ -38,14 +38,6 @@ export interface MemoryConfig {
   sweepIntervalMs: number;
   modelCacheDir: string | null;
   debugMode: boolean;
-  /** Enable cross-encoder reranker as a second stage on top of hybrid recall. */
-  rerank: boolean;
-  /** Cross-encoder model id (must accept text-pair input). */
-  rerankModel: string;
-  /** Quantization for the reranker. Same dtype enum as embeddings. */
-  rerankQuantize: EmbeddingDtype;
-  /** How many hybrid candidates to fetch BEFORE reranking down to top-K. */
-  rerankPoolSize: number;
 }
 
 export const DEFAULTS: MemoryConfig = {
@@ -70,10 +62,6 @@ export const DEFAULTS: MemoryConfig = {
   sweepIntervalMs: 30_000,
   modelCacheDir: null,
   debugMode: false,
-  rerank: false,
-  rerankModel: "Xenova/ms-marco-MiniLM-L-6-v2",
-  rerankQuantize: "q8",
-  rerankPoolSize: 30,
 };
 
 const SETTINGS_KEY = "lcm-memory";
@@ -188,22 +176,6 @@ export function resolveConfig(ctx: ResolveContext = {}): MemoryConfig {
     ),
     modelCacheDir: projectMem.modelCacheDir ?? globalMem.modelCacheDir ?? DEFAULTS.modelCacheDir,
     debugMode: envBool("PI_LCM_MEMORY_DEBUG") ?? projectMem.debugMode ?? globalMem.debugMode ?? DEFAULTS.debugMode,
-    rerank: envBool("PI_LCM_MEMORY_RERANK") ?? projectMem.rerank ?? globalMem.rerank ?? DEFAULTS.rerank,
-    rerankModel:
-      envStr("PI_LCM_MEMORY_RERANK_MODEL") ??
-      projectMem.rerankModel ??
-      globalMem.rerankModel ??
-      DEFAULTS.rerankModel,
-    rerankQuantize:
-      (envStr("PI_LCM_MEMORY_RERANK_QUANTIZE") as EmbeddingDtype | undefined) ??
-      projectMem.rerankQuantize ??
-      globalMem.rerankQuantize ??
-      DEFAULTS.rerankQuantize,
-    rerankPoolSize: clamp(
-      envInt("PI_LCM_MEMORY_RERANK_POOL") ?? projectMem.rerankPoolSize ?? globalMem.rerankPoolSize ?? DEFAULTS.rerankPoolSize,
-      1,
-      200,
-    ),
   };
 
   // pi-lcm disabled? We follow suit: indexing pi-lcm data we don't have is moot.

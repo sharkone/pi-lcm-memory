@@ -1,9 +1,8 @@
 # pi-lcm-memory · quality bench
 
-- git: `06298f8` (dirty)
-- timestamp: 2026-04-28T03:22:04.936Z
+- git: `ba43cec` (dirty)
+- timestamp: 2026-04-28T03:53:01.352Z
 - model: `Xenova/bge-small-en-v1.5` (q8)
-- rerank: off
 - eval source: synthetic
 - corpus: 230 messages + 0 summaries
 - queries: 15

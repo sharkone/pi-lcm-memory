@@ -36,14 +36,42 @@ import { isVecLoadedFor } from "../src/db/vec.js";
 
 import { makeBenchDb, BENCH_TOPICS } from "./lib/fixtures.js";
 import { aggregate, type QueryEval } from "./lib/metrics.js";
+import { buildRealEvalSet } from "./lib/real-eval.js";
 
 const QUICK = process.env.PI_LCM_MEMORY_BENCH_QUICK === "1";
 const MODEL = process.env.PI_LCM_MEMORY_BENCH_MODEL ?? "Xenova/bge-small-en-v1.5";
 const QUANTIZE = process.env.PI_LCM_MEMORY_BENCH_QUANTIZE ?? "q8";
-const RERANK = process.env.PI_LCM_MEMORY_BENCH_RERANK === "1";
-const RERANK_MODEL = process.env.PI_LCM_MEMORY_BENCH_RERANK_MODEL ?? "Xenova/ms-marco-MiniLM-L-6-v2";
-const RERANK_QUANTIZE = process.env.PI_LCM_MEMORY_BENCH_RERANK_QUANTIZE ?? "q8";
-const RERANK_POOL = parseInt(process.env.PI_LCM_MEMORY_BENCH_RERANK_POOL ?? "30", 10);
+
+/** When set, derive the eval set from a real pi-lcm DB at this path. */
+const REAL_DB = process.env.PI_LCM_MEMORY_BENCH_REAL_DB ?? null;
+/** Cap on per-summary message-set size when building real eval (avoids overly broad queries). */
+const REAL_MAX_RELEVANT = parseInt(process.env.PI_LCM_MEMORY_BENCH_REAL_MAX_RELEVANT ?? "30", 10);
+/** Min source messages per summary (skip trivial 1-source summaries). */
+const REAL_MIN_RELEVANT = parseInt(process.env.PI_LCM_MEMORY_BENCH_REAL_MIN_RELEVANT ?? "2", 10);
+/** Cap on real-eval query count. */
+const REAL_MAX_QUERIES = parseInt(
+  process.env.PI_LCM_MEMORY_BENCH_REAL_MAX_QUERIES ?? (QUICK ? "30" : "100"),
+  10,
+);
+/** Truncate real-eval queries to this many chars (helps cross-encoder, which
+ * was trained on short queries). */
+const REAL_MAX_QUERY_CHARS = parseInt(
+  process.env.PI_LCM_MEMORY_BENCH_REAL_MAX_QUERY_CHARS ?? "280",
+  10,
+);
+/** Real-eval query style: "summary" (raw summary text) or "keywords"
+ * (TF×IDF top-N tokens). "keywords" is closer to typical user queries. */
+const REAL_QUERY_STYLE = (process.env.PI_LCM_MEMORY_BENCH_REAL_QUERY_STYLE ?? "summary") as
+  | "summary"
+  | "keywords";
+/** Number of keywords to keep when REAL_QUERY_STYLE = "keywords". */
+const REAL_KEYWORD_COUNT = parseInt(
+  process.env.PI_LCM_MEMORY_BENCH_REAL_KEYWORD_COUNT ?? "8",
+  10,
+);
+/** When set, exclude pi-lcm summaries from the indexed corpus during the bench.
+ *  This isolates the bi-encoder/reranker from the "summary style match" bias. */
+const REAL_MESSAGES_ONLY = process.env.PI_LCM_MEMORY_BENCH_REAL_MESSAGES_ONLY === "1";
 
 const DEFAULT_EVAL_PATH = join(process.cwd(), "bench", "eval", "eval.json");
 const EVAL_PATH = process.env.PI_LCM_MEMORY_BENCH_EVAL ?? DEFAULT_EVAL_PATH;
@@ -70,7 +98,9 @@ interface EvalSet {
   messages: EvalMessage[];
   summaries?: EvalSummary[];
   queries: EvalQuery[];
-  source: "file" | "synthetic";
+  source: "file" | "synthetic" | "real-db";
+  /** When source = real-db, the underlying DB path. */
+  realDbPath?: string;
 }
 
 interface QueryResult {
@@ -88,19 +118,17 @@ interface Report {
     quick: boolean;
     model: string;
     quantize: string;
-    rerank: boolean;
-    rerank_model: string | null;
-    rerank_quantize: string | null;
-    rerank_pool: number | null;
     node_version: string;
     cpu_model: string;
     cpu_cores: number;
     total_memory_gb: number;
-    eval_source: "file" | "synthetic";
+    eval_source: "file" | "synthetic" | "real-db";
     eval_path: string | null;
     n_messages: number;
     n_summaries: number;
     n_queries: number;
+    real_query_style?: "summary" | "keywords";
+    real_messages_only?: boolean;
   };
   aggregate: ReturnType<typeof aggregate>;
   per_query: QueryResult[];
@@ -119,16 +147,6 @@ async function main() {
     cacheDir: null,
   });
   await embedder.warmup();
-
-  if (RERANK) {
-    console.log(`  warming reranker (${RERANK_MODEL}, ${RERANK_QUANTIZE}, pool=${RERANK_POOL})...`);
-    const tRerank0 = Date.now();
-    await embedder.warmupReranker({
-      model: RERANK_MODEL,
-      quantize: RERANK_QUANTIZE as never,
-    });
-    console.log(`  reranker ready in ${Date.now() - tRerank0}ms`);
-  }
   const dims = embedder.knownDims();
   if (!dims) throw new Error("embedder has no known dims after warmup");
 
@@ -191,14 +209,13 @@ async function main() {
     embedder: embedder as never,
     bridge,
     rrfK: DEFAULTS.rrfK,
-    rerankEnabled: () => RERANK,
-    rerankPoolSize: () => RERANK_POOL,
   });
 
-  // Run each query.
-  const perQuery: QueryResult[] = [];
   const k = QUICK ? 10 : 20;
-  console.log(`  running ${evalSet.queries.length} queries (k=${k})...`);
+  const queryCount = evalSet.queries.length;
+  console.log(`  running ${queryCount} queries (k=${k})...`);
+  const tStart = Date.now();
+  const perQuery: QueryResult[] = [];
   for (const q of evalSet.queries) {
     const hits = await retriever.recall({ query: q.query, k });
     const ranked = hits.map((h) => h.pi_lcm_msg_id ?? h.pi_lcm_sum_id ?? "");
@@ -209,7 +226,7 @@ async function main() {
       scores: hits.map((h) => h.score),
     });
   }
-
+  const totalMs = Date.now() - tStart;
   const evals: QueryEval[] = perQuery.map((q) => ({
     query: q.query,
     ranked: q.ranked,
@@ -218,6 +235,7 @@ async function main() {
   const agg = aggregate(evals);
 
   console.log("");
+  console.log(`  avg latency: ${(totalMs / queryCount).toFixed(1)}ms/q\n`);
   console.log(`  aggregate metrics (n=${agg.queries}):`);
   console.log(`    mrr           = ${agg.mrr.toFixed(3)}`);
   console.log(`    recall@5      = ${agg.recallAt5.toFixed(3)}`);
@@ -228,28 +246,57 @@ async function main() {
   bench.cleanup();
   await embedder.terminate();
 
-  const report: Report = {
-    meta: {
-      ...collectMeta(),
-      rerank: RERANK,
-      rerank_model: RERANK ? RERANK_MODEL : null,
-      rerank_quantize: RERANK ? RERANK_QUANTIZE : null,
-      rerank_pool: RERANK ? RERANK_POOL : null,
-      eval_source: evalSet.source,
-      eval_path: evalSet.source === "file" ? EVAL_PATH : null,
-      n_messages: evalSet.messages.length,
-      n_summaries: evalSet.summaries?.length ?? 0,
-      n_queries: evalSet.queries.length,
-    },
-    aggregate: agg,
-    per_query: perQuery,
+  const reportMeta: Report["meta"] = {
+    ...collectMeta(),
+    eval_source: evalSet.source,
+    eval_path:
+      evalSet.source === "real-db"
+        ? evalSet.realDbPath ?? null
+        : evalSet.source === "file"
+          ? EVAL_PATH
+          : null,
+    n_messages: evalSet.messages.length,
+    n_summaries: evalSet.summaries?.length ?? 0,
+    n_queries: evalSet.queries.length,
   };
+  if (evalSet.source === "real-db") {
+    reportMeta.real_query_style = REAL_QUERY_STYLE;
+    reportMeta.real_messages_only = REAL_MESSAGES_ONLY;
+  }
+
+  const report: Report = { meta: reportMeta, aggregate: agg, per_query: perQuery };
   writeOutputs(report);
   console.log("");
   console.log(`Wrote bench/results/quality.${report.meta.git_sha}.json + quality.latest.md`);
 }
 
 function loadEvalSet(): EvalSet {
+  if (REAL_DB) {
+    const built = buildRealEvalSet(REAL_DB, {
+      minRelevant: REAL_MIN_RELEVANT,
+      maxRelevant: REAL_MAX_RELEVANT,
+      maxQueries: REAL_MAX_QUERIES,
+      maxQueryChars: REAL_MAX_QUERY_CHARS,
+      queryStyle: REAL_QUERY_STYLE,
+      keywordCount: REAL_KEYWORD_COUNT,
+    });
+    if (built.queries.length === 0) {
+      console.error(
+        `real eval at ${REAL_DB} produced 0 queries (no summaries with ${REAL_MIN_RELEVANT}–${REAL_MAX_RELEVANT} message sources?). bench cannot run.`,
+      );
+      process.exit(1);
+    }
+    return {
+      messages: built.messages.map((m) => ({ id: m.id, role: m.role, text: m.text })),
+      summaries: REAL_MESSAGES_ONLY
+        ? []
+        : built.summaries.map((s) => ({ id: s.id, text: s.text, depth: s.depth })),
+      queries: built.queries.map((q) => ({ query: q.query, relevant: q.relevant })),
+      source: "real-db",
+      realDbPath: REAL_DB,
+    };
+  }
+
   if (existsSync(EVAL_PATH)) {
     try {
       const txt = readFileSync(EVAL_PATH, "utf8");
@@ -350,8 +397,8 @@ function writeOutputs(report: Report): void {
   const dir = join(process.cwd(), "bench", "results");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const quickSuffix = report.meta.quick ? ".quick" : "";
-  const rerankSuffix = report.meta.rerank ? ".rerank" : "";
-  const jsonPath = join(dir, `quality.${report.meta.git_sha}${quickSuffix}${rerankSuffix}.json`);
+  const sourceSuffix = report.meta.eval_source === "real-db" ? ".real" : "";
+  const jsonPath = join(dir, `quality.${report.meta.git_sha}${quickSuffix}${sourceSuffix}.json`);
   writeFileSync(jsonPath, JSON.stringify(report, null, 2));
   writeFileSync(join(dir, "quality.latest.md"), renderMarkdown(report));
 }
@@ -363,12 +410,13 @@ function renderMarkdown(report: Report): string {
   lines.push(`- git: \`${report.meta.git_sha}\`${report.meta.git_dirty ? " (dirty)" : ""}`);
   lines.push(`- timestamp: ${report.meta.timestamp}`);
   lines.push(`- model: \`${report.meta.model}\` (${report.meta.quantize})`);
-  if (report.meta.rerank) {
-    lines.push(`- rerank: \`${report.meta.rerank_model}\` (${report.meta.rerank_quantize}, pool=${report.meta.rerank_pool})`);
-  } else {
-    lines.push(`- rerank: off`);
+  lines.push(
+    `- eval source: ${report.meta.eval_source}${report.meta.eval_path ? ` (\`${report.meta.eval_path}\`)` : ""}`,
+  );
+  if (report.meta.eval_source === "real-db") {
+    lines.push(`- query style: ${report.meta.real_query_style ?? "summary"}`);
+    lines.push(`- corpus filter: ${report.meta.real_messages_only ? "messages-only" : "messages + summaries"}`);
   }
-  lines.push(`- eval source: ${report.meta.eval_source}${report.meta.eval_path ? ` (\`${report.meta.eval_path}\`)` : ""}`);
   lines.push(`- corpus: ${report.meta.n_messages} messages + ${report.meta.n_summaries} summaries`);
   lines.push(`- queries: ${report.meta.n_queries}`);
   lines.push(`- mode: ${report.meta.quick ? "QUICK" : "FULL"}`);

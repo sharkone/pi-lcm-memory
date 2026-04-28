@@ -92,59 +92,6 @@ describeLive("worker live (requires model download)", () => {
     }
   }, 120_000);
 
-  it("loads + scores with the cross-encoder reranker", async () => {
-    const e = new Embedder({
-      model: "Xenova/bge-small-en-v1.5",
-      quantize: "q8",
-      cacheDir: null,
-    });
-    try {
-      await e.warmup();
-      let rerankerLoaded = false;
-      e.setListener({
-        onRerankerLoaded: () => {
-          rerankerLoaded = true;
-        },
-      });
-      await e.warmupReranker({
-        model: "Xenova/ms-marco-MiniLM-L-6-v2",
-        quantize: "q8",
-      });
-      expect(rerankerLoaded).toBe(true);
-      const state = e.rerankerState();
-      expect(state?.ready).toBe(true);
-      expect(state?.model).toBe("Xenova/ms-marco-MiniLM-L-6-v2");
-
-      // Cross-encoder must rank the relevant doc above the irrelevant one.
-      const query = "How many people live in Berlin?";
-      const docs = [
-        "Berlin has a population of 3,520,031 registered inhabitants.",
-        "New York City is famous for the Metropolitan Museum of Art.",
-      ];
-      const scores = await e.rerank(query, docs);
-      expect(scores.length).toBe(2);
-      expect(scores[0]!).toBeGreaterThan(scores[1]!);
-      // The published model scores: q8 ≈ 8.66 vs -11.25 (large positive
-      // separation). Be lenient about exact magnitudes (q8 vs other dtypes
-      // shift the absolute values) but require the gap is real.
-      expect(scores[0]! - scores[1]!).toBeGreaterThan(5);
-
-      // Throughput probe.
-      const passages = Array.from(
-        { length: 30 },
-        (_, i) => `Berlin entry ${i}: capital of Germany with multiple districts.`,
-      );
-      const t0 = Date.now();
-      const batchScores = await e.rerank("capital of Germany", passages);
-      const ms = Date.now() - t0;
-      expect(batchScores.length).toBe(30);
-      // eslint-disable-next-line no-console
-      console.log(`[live] 30 rerank pairs in ${ms}ms (${((30 * 1000) / ms).toFixed(1)}/s)`);
-    } finally {
-      e.terminate();
-    }
-  }, 180_000);
-
   it("propagates worker errors through embed()", async () => {
     const e = new Embedder({
       model: "this/model-does-not-exist-12345",

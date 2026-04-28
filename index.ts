@@ -199,23 +199,7 @@ export default function (pi: ExtensionAPI) {
       embedder,
       bridge,
       rrfK: config.rrfK,
-      rerankEnabled: () => config.rerank,
-      rerankPoolSize: () => config.rerankPoolSize,
     });
-
-    // If the user opted into rerank, pre-warm the reranker pipeline lazily
-    // so the first auto-recall / lcm_recall doesn't pay the load cost.
-    if (config.rerank) {
-      embedder
-        .warmupReranker({ model: config.rerankModel, quantize: config.rerankQuantize })
-        .catch((e: unknown) => {
-          const m = e instanceof Error ? e.message : String(e);
-          if (config.debugMode) {
-            ctx.ui?.notify?.(`[pi-lcm-memory] reranker warmup: ${m}`, "warning");
-          }
-          diagnostics?.log("reranker_warmup_error", { error: m });
-        });
-    }
 
     sessionStartedAt = Math.floor(Date.now() / 1000);
     primerEmitted = false;

@@ -7,60 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added (Phase 6 — cross-encoder reranker)
+### Phase 6 — cross-encoder reranker: evaluated, removed (post-mortem)
 
-- **Cross-encoder reranker** (opt-in). Default model
-  `Xenova/ms-marco-MiniLM-L-6-v2` runs in the existing embedder worker as
-  a second pipeline (lazy-loaded; zero cost when off). When enabled, the
-  hybrid recall stage fetches a wider candidate pool (default 30) and the
-  cross-encoder reorders the top-K. Falls through to hybrid order on any
-  reranker error so a broken reranker can never silently hurt recall.
-  Wire-protocol additions to the worker: `init_reranker`, `rerank`,
-  `reranker_loaded`, `rerank_result`. Embedder API additions:
-  `warmupReranker(opts)`, `rerank(query, docs)`, `rerankerState()`,
-  `EmbedderEventListener.onRerankerLoaded`. Retriever API additions:
-  `RecallParams.rerank`, `RecallHit.rerank_score`,
-  `RetrieverDeps.rerankEnabled`, `RetrieverDeps.rerankPoolSize`. Config
-  additions: `rerank: boolean` (default `false`), `rerankModel: string`
-  (default `Xenova/ms-marco-MiniLM-L-6-v2`), `rerankQuantize:
-  EmbeddingDtype` (default `q8`), `rerankPoolSize: number` (default 30,
-  range 1–200). Env overrides: `PI_LCM_MEMORY_RERANK={0|1}`,
-  `PI_LCM_MEMORY_RERANK_MODEL`, `PI_LCM_MEMORY_RERANK_QUANTIZE`,
-  `PI_LCM_MEMORY_RERANK_POOL`.
+We built a complete cross-encoder reranker on top of the hybrid recall
+stage (model `Xenova/ms-marco-MiniLM-L-6-v2`, second pipeline in the
+existing worker, opt-in via `rerank: boolean`). Initial synthetic-eval
+numbers were spectacular (MRR 0.364→1.000, nDCG@10 0.391→0.996), but a
+follow-up real-data eval against the user's actual pi-lcm DB (749 msgs,
+79 summaries, 57 queries derived from `summary_sources`) showed the
+opposite: **0 of 57 queries improved, 48 regressed, 9 unchanged**.
 
-- **`/memory rerank on|off`** shortcut command. Reads current state with
-  no args; toggles + persists at the active settings scope when given
-  `on`/`off`. Settings panel grew two rows (`Rerank` boolean,
-  `Rerank pool` number).
+**Root cause.** Cross-encoders trained on the (short query, long
+passage) MS-MARCO distribution strongly prefer passages that are
+stylistically similar to the query. pi-lcm summaries are LLM
+paraphrases of past content — long, prose-styled. Whenever a
+recall-style query is itself prose, the reranker promotes other
+summaries above the actual messages they describe. Hybrid (FTS5 +
+sqlite-vec + RRF) doesn't have this style-bias. Diagnostic confirmed
+the reranker put 76% summaries / 24% messages in top-10, vs 5% / 95%
+for hybrid alone.
 
-- **Quality results.** On the synthetic eval (230 msgs, 15 queries,
-  k=20) at sha `06298f8`:
+**Findings (real-data eval, all configurations):**
 
-      | metric      | hybrid | + rerank | Δ          |
-      | ----------- | -----: | -------: | ----------- |
-      | MRR         |  0.364 |    1.000 | +0.636 (+175%) |
-      | Recall@5    |  0.113 |    0.500 | +0.387 (+342%) |
-      | Recall@10   |  0.480 |    0.993 | +0.513 (+107%) |
-      | Precision@5 |  0.227 |    1.000 | +0.773 (+340%) |
-      | nDCG@10     |  0.391 |    0.996 | +0.605 (+155%) |
+      | configuration                                | MRR Δ   | nDCG@10 Δ |
+      | -------------------------------------------- | ------: | --------: |
+      | summary-style query, full corpus             |  -0.502 |    -0.178 |
+      | summary-style query, messages-only corpus    |  -0.016 |    +0.009 |
+      | keyword-style query,  full corpus            |  -0.269 |    -0.096 |
+      | keyword-style query,  messages-only corpus   |  +0.139 |    +0.033 |
 
-  Live-test throughput on M5 × 8 worker threads, q8 cross-encoder:
-  30 (query, doc) pairs in ~15 ms (≈2000 pairs/sec). Reranker init time
-  is ~30 ms warm + ~3.5 MB model download cold.
+Reranker only wins (+21% MRR / +12% nDCG@10) under a narrow regime:
+short keyword queries AND a corpus filtered to messages only. Even
+then, latency overhead is ~580 ms per query (47× hybrid's 12 ms),
+which is too expensive for auto-recall (fires every turn).
 
-- **Bench harness extended.** `bench/quality.ts` now runs with rerank
-  on/off via `PI_LCM_MEMORY_BENCH_RERANK=1`. JSON output filenames
-  carry a `.rerank` suffix when applicable. Markdown summary shows
-  reranker model + pool size in the header.
+**What we kept.**
 
-- **Tests.** `test/retrieval.rerank.test.ts` adds 5 unit tests with a
-  `FakeRerankerEmbedder` that exercise: rerank-off path, rerank-on
-  reorders correctly, `params.rerank` overrides config, fall-through
-  on thrown error, fall-through on score-count mismatch.
-  `test/worker.live.test.ts` adds one live test (gated on
-  `PI_LCM_MEMORY_LIVE_TEST=1`) that loads the cross-encoder, scores
-  the canonical Berlin/NYC pair, and runs a 30-pair throughput probe.
-  Total tests now: 87 passing (was 82), 11 skipped (was 10).
+- `bench/lib/real-eval.ts` — generates a recall-quality eval set from
+  any pi-lcm DB by walking `summary_sources` (summary text → source
+  message ids). Includes optional TF×IDF keyword extraction
+  (`queryStyle: "keywords"`) and corpus filtering. Broadly useful for
+  any future retrieval work.
+- `PI_LCM_MEMORY_BENCH_REAL_DB`, `PI_LCM_MEMORY_BENCH_REAL_QUERY_STYLE`,
+  `PI_LCM_MEMORY_BENCH_REAL_MESSAGES_ONLY` env vars in `bench/quality.ts`.
+- Historical bench result snapshots under `bench/results/` documenting
+  the synthetic and real-data findings.
+
+**What we removed.**
+
+- All worker protocol additions (`init_reranker`, `rerank`,
+  `reranker_loaded`, `rerank_result` message types and handlers).
+- `Embedder.warmupReranker`, `rerank`, `rerankerState`, the `Reranker*`
+  types, the `pendingRerank` map, `onRerankerLoaded` listener, and
+  `spawnAndLoadReranker`.
+- `Retriever`'s rerank branch (`applyRerank`, `RecallParams.rerank`,
+  `RecallHit.rerank_score`, `RetrieverDeps.rerankEnabled`,
+  `RetrieverDeps.rerankPoolSize`).
+- Config keys: `rerank`, `rerankModel`, `rerankQuantize`,
+  `rerankPoolSize` and their env overrides.
+- `/memory rerank on|off` command and the two settings-panel rows.
+- `test/retrieval.rerank.test.ts` and the live-rerank test in
+  `test/worker.live.test.ts`.
+- `bench/quality.ts` COMPARE mode (rerank-specific A/B harness).
+
+**For future-me / future contributors.** If revisiting:
+
+1. The summary-style bias is fundamental, not fixable by switching to
+   another public cross-encoder — they're all trained on the same
+   short-query / long-passage distribution.
+2. Filtering the rerank pool to `source_kind='message'` papers over the
+   bias but adds a config knob users won't tune.
+3. The +12% nDCG@10 win on the favorable configuration costs ~580 ms /
+   query. For an interactive auto-recall path, that's the wrong shape.
+4. Time would probably be better spent tuning the existing hybrid (RRF
+   k, lex/sem breadth, summary indexing strategy, FTS5 tokenizer) than
+   adding a second model.
+5. A domain-tuned reranker (trained on conversational paraphrase pairs
+   instead of MS-MARCO) might work — but that's a research project,
+   not a feature.
+
+The bench infrastructure built for this turn-around is the real
+deliverable: from now on, **every recall-quality claim must be backed
+by a `bench/quality.ts` real-data run**, not just synthetic numbers.
 
 ### Added (Phase 6 — housekeeping + bench infra)
 

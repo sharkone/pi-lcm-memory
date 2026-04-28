@@ -169,29 +169,39 @@ the quality lift with numbers.
       via `PI_LCM_MEMORY_LIVE_TEST=1`. Coverage: backfill, lcm_recall,
       lcm_similar, /memory commands, settings panel factory contract,
       message_end hook indexing. 7 tests passing in ~500 ms.
-- [x] **Capture baseline** — `bench/results/{perf,quality}.<sha>.json`
-      committed; reranker delta is a diff, not a vibe.
-- [x] **Cross-encoder reranker** (`Xenova/ms-marco-MiniLM-L-6-v2`)
-      shipped. Second pipeline in the existing worker, opt-in via
-      `rerank: boolean` config (default off, lazy-loaded). Per-call
-      override via `params.rerank`. Falls through to hybrid order on
-      any reranker error. New `/memory rerank on|off` command and
-      two new settings-panel rows.
-- [x] **Re-run benchmarks** — synthetic eval shows MRR 0.364→1.000,
-      Recall@10 0.480→0.993, nDCG@10 0.391→0.996. Live throughput
-      ~2000 (query, doc) pairs/sec on M5 × 8 threads, q8. Shipped.
+- [x] **Capture baseline** — `bench/results/` snapshots committed.
+- [x] **Real-data eval generator** (`bench/lib/real-eval.ts`) —
+      derives queries from a pi-lcm DB's `summary_sources` DAG, with
+      optional TF×IDF keyword extraction. Reusable for any future
+      retrieval work.
+- [x] **Cross-encoder reranker (evaluated, removed).** Built it,
+      measured it on the user's real DB, found it doesn't carry its
+      weight, reverted. See CHANGELOG § "Phase 6 — cross-encoder
+      reranker: evaluated, removed (post-mortem)" for numbers and
+      root cause. **Decision rule for future quality features: real-
+      data bench wins or it doesn't ship.**
 
 ---
 
 ## Future research (not scheduled)
 
 Kept for context; pull into a numbered phase only when actively useful.
+Every item below must be measured against `bench/quality.ts` (real-data
+eval) before shipping.
 
+- [ ] **Tune existing hybrid first.** Before adding any new stage,
+      sweep RRF k, lex/sem candidate breadths, and summary indexing
+      strategy on the real-data eval. Likely cheaper wins than any
+      second-stage feature, and we now have the harness to measure.
 - [ ] **Code / file content indexing** (separate `code_vec` table;
       AST-aware chunking). User has flagged this as **interesting for
-      future discussion**. Design notes in NEXT.md § "Future research".
+      future discussion**.
 - [ ] **Memory cards** (manually saved snippets via `/memory save` and a
       tool). Mirrors a prior local attempt.
+- [ ] **Domain-tuned reranker** (trained on conversational paraphrase
+      pairs, not MS-MARCO). Open research question, not a feature.
+      Public cross-encoders all carry the style-bias documented in
+      the Phase 6 post-mortem.
 - [ ] **Cross-project / workspace-wide recall** (multi-DB query layer).
 - [ ] **MCP wrapper** exposing recall to Claude Code (Q3 deferred path).
 - [ ] **Eviction / retention policy** (e.g., archive after N days, keep

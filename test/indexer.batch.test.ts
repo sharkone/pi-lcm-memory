@@ -32,10 +32,6 @@ const baseConfig: MemoryConfig = {
   sweepIntervalMs: 30_000,
   modelCacheDir: null,
   debugMode: false,
-  rerank: false,
-  rerankModel: "Xenova/ms-marco-MiniLM-L-6-v2",
-  rerankQuantize: "q8",
-  rerankPoolSize: 30,
 };
 
 /** Embedder spy that records every embed call's batch size. */
