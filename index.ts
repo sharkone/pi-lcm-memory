@@ -252,23 +252,36 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify("pi-lcm-memory not initialized.", "warning");
       return;
     }
-    const panel = new MemorySettingsPanel({
-      config,
-      scope: settingsScope,
-      cwd,
-      stats: store.stats(),
-      save: (cfg, scope, cwdArg) => {
-        saveSettings(cfg, scope, cwdArg);
-        config = { ...cfg };
-        settingsScope = scope;
-        ctx.ui?.notify?.(`pi-lcm-memory settings saved to ${scope}.`, "info");
-      },
-    });
-    if (typeof ctx.ui?.custom === "function") {
-      ctx.ui.custom({ overlay: true, component: panel, onClose: () => panel.onClose?.() });
-    } else {
+    if (typeof ctx.ui?.custom !== "function") {
       ctx.ui?.notify?.("settings panel UI not available in this Pi runtime.", "warning");
+      return;
     }
+    // Pi's contract:
+    //   ctx.ui.custom(factory, { overlay?: boolean })
+    //   factory: (tui, theme, keybindings, done) => Component | Promise<Component>
+    // We MUST construct the panel inside the factory so we have access to
+    // `done`, the close callback. Calling done() (e.g. on Q / Esc) restores
+    // the editor and resolves the custom() promise. Passing an object here
+    // — as we did before — made pi try to invoke a non-function and crash.
+    ctx.ui.custom(
+      (_tui: unknown, _theme: unknown, _kb: unknown, done: (result?: unknown) => void) => {
+        const panel = new MemorySettingsPanel({
+          config,
+          scope: settingsScope,
+          cwd: cwd ?? process.cwd(),
+          stats: store!.stats(),
+          save: (cfg, scope, cwdArg) => {
+            saveSettings(cfg, scope, cwdArg);
+            config = { ...cfg };
+            settingsScope = scope;
+            ctx.ui?.notify?.(`pi-lcm-memory settings saved to ${scope}.`, "info");
+          },
+        });
+        panel.onClose = () => done();
+        return panel;
+      },
+      { overlay: true },
+    );
   }
 
   // ── Hooks ───────────────────────────────────────────────────────────────────
