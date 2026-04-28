@@ -112,7 +112,18 @@ export default function (pi: ExtensionAPI) {
         }
       },
       onLoaded: () => {
-        diagnostics?.log("model_loaded", { model: config.embeddingModel, dims: embedder?.knownDims() ?? null });
+        const st = embedder?.state();
+        diagnostics?.log("model_loaded", {
+          model: config.embeddingModel,
+          dims: embedder?.knownDims() ?? null,
+          intraOpNumThreads: st?.intraOpNumThreads ?? null,
+        });
+        if (st?.intraOpNumThreads && st.intraOpNumThreads > 1) {
+          ctx.ui?.notify?.(
+            `[pi-lcm-memory] embedder ready (${config.embeddingModel}, ${st.intraOpNumThreads} cores). Backfill starting.`,
+            "info",
+          );
+        }
         updateStatus(store, indexer, embedder, ctx);
         // Kick a sweep so backfill begins immediately once weights are warm.
         indexer?.kick();
@@ -184,9 +195,10 @@ export default function (pi: ExtensionAPI) {
   function resetState(): void {
     indexer?.stop();
     indexer = null;
+    embedder?.terminate();
+    embedder = null;
     store = null;
     bridge = null;
-    embedder = null;
     retriever = null;
     diagnostics = null;
     cwd = null;

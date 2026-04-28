@@ -83,16 +83,14 @@ function printStats(state: CommandState, ctx: any): void {
   }
   const s = state.store.stats();
   const sizeMb = (s.dbSizeBytes / 1024 / 1024).toFixed(1);
-  ctx.ui.notify(
-    [
-      `pi-lcm-memory stats:`,
-      `  indexed:  ${s.indexed}  (msg=${s.byMessage}  sum=${s.bySummary})`,
-      `  vec:      ${s.vecRows} rows  ${s.vecAvailable ? "(sqlite-vec ✓)" : "(sqlite-vec UNAVAILABLE)"}`,
-      `  model:    ${s.modelName ?? "—"}  dim=${s.modelDims ?? "—"}`,
-      `  db size:  ${sizeMb} MB`,
-    ].join("\n"),
-    "info",
-  );
+  const lines = [
+    `pi-lcm-memory stats:`,
+    `  indexed:  ${s.indexed}  (msg=${s.byMessage}  sum=${s.bySummary})`,
+    `  vec:      ${s.vecRows} rows  ${s.vecAvailable ? "(sqlite-vec ✓)" : "(sqlite-vec UNAVAILABLE)"}`,
+    `  model:    ${s.modelName ?? "—"}  dim=${s.modelDims ?? "—"}`,
+    `  db size:  ${sizeMb} MB`,
+  ];
+  ctx.ui.notify(lines.join("\n"), "info");
 }
 
 function printStatus(state: CommandState, ctx: any): void {

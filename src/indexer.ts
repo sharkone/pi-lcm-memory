@@ -35,18 +35,13 @@ interface PendingRow {
   args: Omit<InsertArgs, "embedding" | "model_dims">;
 }
 
-// Smaller batches = more frequent event-loop yields = more responsive TUI
-// during backfill. ONNX inference blocks the event loop for the duration of
-// each call, so we keep batches modest. Trade-off: more inference calls means
-// slightly more per-call overhead, but with q8 weights each call is fast.
-const SWEEP_BATCH = 8;
+// Inference now runs in a worker_threads thread (see embedder.ts +
+// worker.mjs), so the main thread is never blocked by ONNX. We can use
+// a healthy batch size for throughput; the worker pumps through them
+// while the TUI stays responsive.
+const SWEEP_BATCH = 32;
 const SWEEP_BACKOFF_MIN_MS = 5_000;
 const SWEEP_BACKOFF_MAX_MS = 5 * 60_000;
-
-/** Yield to the event loop so TUI input/render can interleave with backfill. */
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
-}
 
 export class Indexer {
   private deps: IndexerDeps;
@@ -216,8 +211,6 @@ export class Indexer {
       if (batch.length >= SWEEP_BATCH) {
         await this.embedAndStoreBatch(batch);
         batch = [];
-        // Let the TUI render between batches.
-        await yieldToEventLoop();
       }
     }
     if (batch.length > 0 && !this.stopped) await this.embedAndStoreBatch(batch);

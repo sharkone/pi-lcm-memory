@@ -340,15 +340,23 @@ the same defaults pi-lcm uses (TBD at impl).
 ## Open questions / impl-time TBDs
 
 1. Resolving pi-lcm's `dbDir`: read its settings file, or ship a redundant
-   default? (Ideally both: prefer pi-lcm settings if present.)
+   default? (Ideally both: prefer pi-lcm settings if present.) — **resolved**
+   in Phase 1: env > project > global > defaults; we read pi-lcm's
+   `lcm.dbDir`/`lcm.enabled` so we follow it.
 2. Quantized model availability for `Xenova/bge-small-en-v1.5` in
-   Transformers.js v3 — verify INT8 path or fall back to FP32 + post-load
-   quant.
+   Transformers.js v3. — **resolved** in Phase 4 hotfix: q8 variant ships
+   with all major Xenova feature-extraction models (suffix `_quantized.onnx`).
+   Default changed from `auto` to `q8`.
 3. Exact event signature for `message_end` in current `@mariozechner/pi-coding-agent`
    — confirm `event.message` shape and pruning of system/tool entries.
-4. Sweep driver: `setInterval` vs `unref()`d timer (must not keep node alive
-   beyond Pi process).
+4. Sweep driver: `setInterval` vs `unref()`d timer. — **resolved** in Phase 4:
+   `setTimeout` chain with `.unref()`; adaptive backoff.
 5. WAL checkpoint cadence: pi-lcm checkpoints on close; we should not race.
+6. **TUI freeze during ONNX inference** (Phase 4 hotfix mitigated; Phase 5
+   target). ONNX runs synchronously on the main thread, blocking the event
+   loop. Mitigations shipped: q8 weights (×2-4 faster), batch size 8 (was
+   32), `setImmediate` yield between batches. Real fix = worker_threads
+   offloading.
 
 ## Out of scope (kept for ROADMAP)
 

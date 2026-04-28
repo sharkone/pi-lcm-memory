@@ -26,6 +26,7 @@
   "files": [
     "index.ts",
     "src/**/*.ts",
+    "src/**/*.mjs",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
