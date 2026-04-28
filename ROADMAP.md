@@ -44,9 +44,10 @@ results. No primer yet, no auto-recall.
 - [ ] `src/retrieval.ts` — RRF merge of FTS5 + vec.
 - [ ] `src/tools/lcm-recall.ts` — registered via `pi.registerTool`.
 - [ ] `src/tools/lcm-similar.ts` — registered via `pi.registerTool`.
+- [ ] `src/settings-panel.ts` — interactive panel (parity with pi-lcm UX).
+- [ ] `src/commands.ts` — `/memory` dispatcher (stats, search, model, reindex, clear, status, settings).
 - [ ] Tests: `schema`, `embedder`, `indexer` (insert→row), `retrieval` (RRF
-      ranking on synthetic fixtures).
-- [ ] `/memory stats` command.
+      ranking on synthetic fixtures), `settings-panel` (load/save/scope).
 
 **Exit criteria:**
 - Open Pi in a project where pi-lcm has prior content; first session triggers
@@ -119,7 +120,7 @@ have everything re-embedded in the background, with a footer status visible.
 - [ ] Cross-project / workspace-wide recall (multi-DB query layer).
 - [ ] Code / file content indexing (separate `code_vec` table; AST-aware
       chunking).
-- [ ] Settings panel UI (`pi.registerSettingsPanel(...)`).
+
 - [ ] MCP wrapper exposing recall to Claude Code (Q3 deferred path).
 - [ ] Eviction / retention policy (e.g., archive after N days, keep summaries).
 - [ ] Edit / redact memory (with audit log).

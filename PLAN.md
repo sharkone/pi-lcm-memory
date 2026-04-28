@@ -256,7 +256,26 @@ project.
 /memory model <name>     # change embedding model (triggers reindex)
 /memory clear            # destructive; prompts confirm; re-embeds from pi-lcm
 /memory status           # current sweep cycle / queue depth / last error
+/memory settings         # open settings panel
+/memory-settings         # standalone settings panel command
 ```
+
+## Settings panel
+
+Mirrors pi-lcm's `LcmSettingsPanel` shape (registered via `pi.registerSettingsPanel`).
+Provides interactive editing of the configuration fields below:
+
+- Enable / disable.
+- Embedding model selector (changing prompts a reindex).
+- Index toggles (messages, summaries, skip tool I/O).
+- Primer on/off + topK.
+- Auto-recall mode + topK + token budget.
+- Sweep interval.
+- RRF k.
+- Scope toggle (project vs global).
+
+Writes back to project (`<cwd>/.pi-lcm-memory.json`) or global
+(`~/.config/pi-lcm-memory/settings.json`) depending on selected scope.
 
 ## Configuration
 
@@ -337,6 +356,5 @@ the same defaults pi-lcm uses (TBD at impl).
 - "Memory cards" (user-saved snippets) — was in prior local attempt; reconsider
   in phase 4+.
 - Cross-encoder re-ranker (e.g., `Xenova/ms-marco-MiniLM-L-6-v2`).
-- UI settings panel.
 - Editing / redacting / forgetting memory.
 - Code/file content indexing (separate retrieval problem).
