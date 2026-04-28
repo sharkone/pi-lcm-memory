@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "git_sha": "e468418",
+    "git_dirty": false,
+    "timestamp": "2026-04-28T03:13:49.297Z",
+    "quick": false,
+    "model": "Xenova/bge-small-en-v1.5",
+    "quantize": "q8",
+    "node_version": "v25.9.0",
+    "cpu_model": "Apple M5",
+    "cpu_cores": 10,
+    "total_memory_gb": 16,
+    "sweep_corpus_size": 1000
+  },
+  "results": [
+    {
+      "bench": "worker_warmup_ms",
+      "unit": "ms",
+      "value": 190,
+      "detail": {
+        "note": "First warmup of the run. Cold-cache cost only on first model download.",
+        "threads": 8
+      }
+    },
+    {
+      "bench": "embed_throughput",
+      "unit": "embeds/sec",
+      "value": 623.3766233766233,
+      "detail": {
+        "batch_size": 32,
+        "batches": 30,
+        "total_embeds": 960,
+        "ms": 1540
+      }
+    },
+    {
+      "bench": "embed_latency_b1_ms",
+      "unit": "ms",
+      "value": 3.389875,
+      "detail": {
+        "count": 100,
+        "min": 2.146208,
+        "max": 5.785417,
+        "mean": 3.3927800100000014,
+        "p50": 3.389875,
+        "p90": 4.115959,
+        "p99": 5.785417
+      }
+    },
+    {
+      "bench": "embed_latency_b32_ms",
+      "unit": "ms",
+      "value": 50.24,
+      "detail": {
+        "count": 30,
+        "min": 47.812625,
+        "max": 59.844292,
+        "mean": 50.6898416,
+        "p50": 50.24,
+        "p90": 54.207875,
+        "p99": 59.844292
+      }
+    },
+    {
+      "bench": "sweep_throughput",
+      "unit": "rows/sec",
+      "value": 259.2016588906169,
+      "detail": {
+        "seeded": 1000,
+        "indexed": 1000,
+        "total_ms": 3858
+      }
+    },
+    {
+      "bench": "db_size_bytes_per_row",
+      "unit": "bytes",
+      "value": 7373.24,
+      "detail": {
+        "db_total_bytes": 7373240,
+        "indexed": 1000
+      }
+    },
+    {
+      "bench": "recall_latency_ms",
+      "unit": "ms",
+      "value": 2.713958,
+      "detail": {
+        "count": 100,
+        "min": 1.498334,
+        "max": 5.140125,
+        "mean": 2.7129545700000004,
+        "p50": 2.713958,
+        "p90": 3.817375,
+        "p99": 5.140125
+      }
+    }
+  ]
+}
