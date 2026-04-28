@@ -17,6 +17,6 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["index.ts", "src/**/*.ts", "test/**/*.ts"],
+  "include": ["index.ts", "src/**/*.ts", "test/**/*.ts", "bench/**/*.ts"],
   "exclude": ["node_modules", "dist", "build"]
 }

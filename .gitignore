@@ -16,3 +16,11 @@ coverage/
 *.db-shm
 .idea/
 .vscode/
+
+# Bench results: opt into commit explicitly per snapshot.
+bench/results/*.json
+bench/results/*.md
+!bench/results/.gitkeep
+# Eval set may contain user-private data. Commit only synthetic ones explicitly.
+bench/eval/*.json
+!bench/eval/.gitkeep

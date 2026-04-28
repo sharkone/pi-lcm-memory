@@ -151,16 +151,18 @@ Full plan in [NEXT.md](./NEXT.md). Order matters: cleanup, then
 measurement infrastructure, then the cross-encoder, so we can prove
 the quality lift with numbers.
 
-- [ ] **Housekeeping pass** — drop `_testing` export from indexer,
-      remove or rate-limit `iter_chunk` trace, fold `log` alias into
-      `events`, audit unused exports, brief tracer doc in README.
-- [ ] **Performance benchmarks** (`bench/perf.ts`) — embed throughput,
+- [x] **Housekeeping pass** — dropped `_testing` export from indexer,
+      removed `iter_chunk` trace, folded `log` alias into `events`,
+      un-exported orphans (`getOpenDb`/`getOpenCwd`/`getDbPath`/
+      `REGISTRY`). Tracer doc in README already shipped earlier.
+- [x] **Performance benchmarks** (`bench/perf.ts`) — embed throughput,
       hook/sweep latencies (p50/p99), recall latency, DB size growth,
-      cold worker warmup. Outputs JSON + markdown summary.
-- [ ] **Recall quality benchmarks** (`bench/quality.ts`) — MRR,
-      nDCG@10, recall@10, precision@5 over an eval set generated from
-      a real conversation DB. Optional: BEIR/MS-MARCO subset for
-      cross-checks.
+      cold worker warmup. Outputs JSON + markdown summary. Run via
+      `npm run bench:perf` (`PI_LCM_MEMORY_BENCH_QUICK=1` for smoke).
+- [x] **Recall quality benchmarks** (`bench/quality.ts`) — MRR,
+      nDCG@10, recall@5/@10, precision@5 over an eval set. Synthetic
+      eval generated from `BENCH_TOPICS` if no `bench/eval/eval.json`
+      is provided. Run via `npm run bench:quality`.
 - [ ] **End-to-end test harness** (`test/e2e/`) — real worker, real
       DB, real ONNX, faithful pi `ExtensionAPI` stub. Catches the
       class of integration bugs unit tests miss (e.g. settings panel
