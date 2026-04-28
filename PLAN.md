@@ -1,4 +1,4 @@
-# pi-lcm-memory — PLAN
+# 📐 pi-lcm-memory — PLAN
 
 A Pi extension that adds persistent, cross-session **semantic memory** on top of
 [pi-lcm](https://github.com/codexstar69/pi-lcm). Goal: perfect recall of anything

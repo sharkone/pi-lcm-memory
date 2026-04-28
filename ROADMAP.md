@@ -1,220 +1,133 @@
-# pi-lcm-memory — ROADMAP
+# 🗺️ pi-lcm-memory — ROADMAP
 
 Phased delivery. Each phase ships a working extension; later phases are pure
 additions (no schema rewrites unless explicitly noted).
 
-Cross-references the [PLAN](./PLAN.md) for design details.
+Cross-references [PLAN.md](./PLAN.md) for design details and [CHANGELOG.md](./CHANGELOG.md) for what landed.
 
 ---
 
-## Phase 0 — Bootstrap
+## ✅ Phase 0 — Bootstrap
 
-**Goal:** Repo, docs, and skeleton that compiles and loads as a no-op Pi
-extension.
+**Goal:** Repo, docs, and skeleton that compiles and loads as a no-op Pi extension.
 
-- [x] Interview locked (Q1–Q8).
-- [x] `package.json`, `tsconfig.json`, `.gitignore`, `LICENSE` (MIT).
-- [x] `README.md` (intent + install pointer).
-- [x] `PLAN.md`, `ROADMAP.md`, `CHANGELOG.md`.
-- [x] Git repo init with `sharkone@en-mousse.org`.
-- [x] First commit: docs + scaffolding only.
-- [ ] CI / pre-commit (defer; optional).
+- [x] Interview locked (Q1–Q8)
+- [x] `package.json`, `tsconfig.json`, `.gitignore`, `LICENSE` (MIT)
+- [x] `README.md`, `PLAN.md`, `ROADMAP.md`, `CHANGELOG.md`
+- [x] Git repo init (`sharkone@en-mousse.org`)
+- [x] First commit: docs + scaffolding only
+- [ ] CI / pre-commit *(deferred; optional)*
 
-**Exit criteria:** repo builds cleanly with `tsc --noEmit`. Loads as a Pi
-extension and prints a single `[pi-lcm-memory] enabled (v0)` notice on
-`session_start`.
+**Exit criteria:** builds cleanly with `tsc --noEmit`; loads as a Pi extension and prints `[pi-lcm-memory] enabled (v0)` on `session_start`. ✅
 
 ---
 
-## Phase 1 — MVP: passive index + tool-based recall (decisions A + 6) + B + D
+## ✅ Phase 1 — MVP: passive index + hybrid recall
 
-**Goal:** Every new message embedded; `lcm_recall` returns top-K hybrid
-results. Session-start primer (B) and heuristic auto-recall (D) folded in
-as the user opted for A+B+D in Q8.
+**Goal:** Every new message embedded; `lcm_recall` returns top-K hybrid results. Session-start primer (B) and heuristic auto-recall (D) folded in.
 
-- [x] `src/db/connection.ts` — open shared DB by mirroring pi-lcm's
-      `hashCwd(cwd)` path scheme.
-- [x] `src/db/schema.ts` — additive migrations: `memory_vec`, `memory_index`,
-      `memory_meta`. Idempotent.
-- [x] `src/db/vec.ts` — load `sqlite-vec` extension; soft-fail with clear
-      message if unavailable.
-- [x] `src/embeddings/embedder.ts` — Transformers.js pipeline, lazy load,
-      configurable model.
-- [x] `src/bridge.ts` — read-only access to pi-lcm `messages` + `summaries`.
-- [x] `src/indexer.ts` — `message_end` hook + 30s sweep loop.
-- [x] `src/retrieval.ts` — RRF merge of FTS5 + vec.
-- [x] `src/tools/lcm-recall.ts` — registered via `pi.registerTool`.
-- [x] `src/tools/lcm-similar.ts` — registered via `pi.registerTool`.
-- [x] `src/settings-panel.ts` — interactive panel (parity with pi-lcm UX).
-- [x] `src/commands.ts` — `/memory` dispatcher (stats, search, model, reindex, clear, status, settings).
-- [x] `src/primer.ts` — session-start briefing (decision B).
-- [x] `src/auto-recall.ts` — heuristic trigger (decision D).
-- [x] Tests: utils, config, settings, schema, store, bridge, indexer,
-      retrieval (RRF), primer, auto-recall — 44 tests, all green.
+- [x] `src/db/connection.ts` — shared DB via pi-lcm's `hashCwd(cwd)` scheme
+- [x] `src/db/schema.ts` — additive migrations (`memory_vec`, `memory_index`, `memory_meta`), idempotent
+- [x] `src/db/vec.ts` — load `sqlite-vec`; soft-fail with clear message
+- [x] `src/embeddings/embedder.ts` — Transformers.js pipeline, lazy load, configurable model
+- [x] `src/bridge.ts` — read-only access to pi-lcm `messages` + `summaries`
+- [x] `src/indexer.ts` — `message_end` hook + 30 s sweep loop
+- [x] `src/retrieval.ts` — RRF merge of FTS5 + vec
+- [x] `src/tools/lcm-recall.ts` — registered via `pi.registerTool`
+- [x] `src/tools/lcm-similar.ts` — registered via `pi.registerTool`
+- [x] `src/settings-panel.ts` — interactive TUI panel (parity with pi-lcm UX)
+- [x] `src/commands.ts` — `/memory` dispatcher
+- [x] `src/primer.ts` — session-start briefing
+- [x] `src/auto-recall.ts` — heuristic trigger
+- [x] 44 vitest tests, all green
 
-**Exit criteria:**
-- [x] Open Pi in a project where pi-lcm has prior content; first session triggers
-      a backfill sweep that embeds all existing messages and summaries (covered
-      by indexer test "sweep tick embeds un-indexed messages and summaries").
-- [x] Subsequent messages auto-index (covered by indexer test "handleMessage
-      path embeds via the inflight chain").
-- [x] `lcm_recall("…")` returns relevant top-K with snippet + score on a
-      synthetic corpus (covered by retrieval tests).
-- [x] All tests green; no patches to pi-lcm.
+**Exit criteria:** `lcm_recall("…")` returns relevant top-K on a real corpus; no patches to pi-lcm. ✅
 
-**Deferred to Phase 4 (operator polish):**
-- Live model smoke test exercising Transformers.js download + inference end
-  to end. Skipped from CI to avoid ~30MB downloads per run; manual smoke
-  via `pi -e ./index.ts` in a project with pi-lcm history.
+> *Phases 2 & 3 (primer + auto-recall) were folded into Phase 1 per user decision (Q8: A+B+D).*
 
 ---
 
-## Phase 2 — Session-start primer (decision B) — merged into Phase 1
+## ✅ Phase 4 — Operator polish
 
-Folded into Phase 1 since the user picked A+B+D in Q8. See `src/primer.ts`
-and `test/primer.test.ts`.
+**Goal:** Make pi-lcm-memory pleasant to live with day-to-day.
 
-## Phase 3 — Heuristic auto-recall (decision D) — merged into Phase 1
+- [x] `/memory reindex`, `/memory model`, `/memory clear --yes`, `/memory status`
+- [x] Footer status bar (index progress, sweep state, model download %)
+- [x] First-time model download notice with size + per-MB progress
+- [x] Project-vs-global settings precedence + writeback
+- [x] Batched embedder (32 rows per inference call); adaptive sweep backoff (idle ×2, max 5 min)
+- [x] Rolling diagnostics ring (200 events in `memory_meta`) + `/memory events`
+- [x] Lazy capture of pi-lcm `conversation_id` (enables `sessionFilter`)
+- [x] 60 vitest tests, all green
 
-Folded into Phase 1. See `src/auto-recall.ts` and `test/auto-recall.test.ts`.
-
----
-
-## Phase 4 — Operator polish
-
-**Goal:** Make pi-lcm-memory pleasant to live with.
-
-- [x] `/memory reindex` (clear + kick), `/memory model`, `/memory clear --yes`,
-      `/memory status` (with backoff/idleStreak).
-- [x] `ctx.ui.setStatus(...)` footer with index/sweep/download state.
-- [x] README "Quick start" mirrored from pi-lcm's style; CHANGELOG updated.
-- [x] Notify on first-time model download with size (Transformers.js progress
-      callback wired through embedder listener).
-- [x] Project-vs-global settings precedence + writeback (settings.ts; panel
-      P toggles).
-- [x] Performance tightening: batched embedder calls (one inference call per
-      batch of 32); adaptive sweep interval (idle ticks back off ×2, capped at
-      5 min; `kick()` resets immediately on new work / commands / compact).
-- [x] Structured event log to `memory_meta` (rolling window of 200) +
-      `/memory events` view.
-- [x] Lazy capture of pi-lcm's `conversation_id` after `message_end` so
-      `sessionFilter` works without guessing.
-- [x] Tests: diagnostics, batched indexer, adaptive backoff via `kick()`,
-      `latestConversationId`, all `/memory` subcommands.
-
-**Exit criteria:** A user can change embedding model with one command and
-have everything re-embedded in the background, with a footer status visible. ✅
+**Exit criteria:** change embedding model in one command; watch re-embedding in the footer. ✅
 
 ---
 
-## Phase 5 — Stabilization & stretches (any order, opt-in)
+## ✅ Phase 5 — Stabilization
 
-### Stabilization round (shipped)
+**Goal:** Zero TUI freezes; rock-solid under concurrent pi-lcm writes.
 
-- [x] **Worker-thread embedder.** `src/embeddings/worker.mjs` owns the
-      pipeline in a `worker_threads` thread; main thread is never blocked
-      by ONNX. Multi-core ORT (`intraOpNumThreads = cpus()-1`, capped at
-      8). Zero-copy `ArrayBuffer` transfers. Live test asserts semantic
-      ordering and ~1880 embeds/sec on an M-class laptop.
-- [x] **Single-transaction batched inserts.** `store.insertBatch(items[])`
-      with IMMEDIATE locking + reused prepared statements. 15× faster
-      in isolation; eliminates lock-acquisition stacking under concurrent
-      pi-lcm writes. New `whichHashesPresent` returns Map<hash, vec_rowid>
-      via a single IN() query.
-- [x] **Side-channel tracer (`PI_LCM_MEMORY_TRACE=1`).** Synchronous
-      file-based event log that survives main-thread freezes; main and
-      worker write to the same file. Documented set of events covering
-      tick / batch / embed lifecycle.
-- [x] **Schema v2: many-to-one id mapping.** `memory_index_msg` and
-      `memory_index_sum` side tables. Closes the dedupe leak where two
-      pi-lcm messages with identical content shared one embedding but
-      only one id was recorded — the other leaked through every sweep.
-      Migration backfills from existing `memory_index` rows.
-- [x] **Bridge generator: rowid cursor + SQL filter.** Iteration is
-      forward-only by `m.rowid` and skipped roles / empty content are
-      filtered at the SQL level. Combined with the safety yield in
-      `processBatched` every 1024 items, the infinite-loop class of
-      bugs is structurally impossible. Two regression tests cover it.
-- [x] **Settings panel API fix.** `ctx.ui.custom(factory, options)` shape
-      — was passing an object literal, pi crashed at `factory is not a
-      function`. Now constructed inside a factory closure with `done`
-      wired to `onClose`.
-- [x] **120s warmup watchdog + `/memory worker` command + per-MB
-      download notifications + worker hello message** for visibility
-      during model downloads.
+- [x] **Worker-thread embedder** — all ONNX inference in `worker_threads`; zero main-thread blocking; multi-core ORT (`cpus()-1`, max 8); zero-copy `ArrayBuffer` transfers
+- [x] **Single-transaction batched inserts** — `insertBatch()` with `IMMEDIATE` lock + reused statements; 15× faster, eliminates lock contention with pi-lcm
+- [x] **Side-channel tracer** (`PI_LCM_MEMORY_TRACE=1`) — synchronous file log that survives main-thread freezes; main + worker write to same file
+- [x] **Schema v2: many-to-one id mapping** — `memory_index_msg` / `memory_index_sum` side tables; closes dedupe leak where identical-content messages shared one embedding but only one id was recorded
+- [x] **Bridge rowid cursor + SQL filter** — forward-only iteration; skipped roles filtered at SQL level; safety yield every 1024 items; infinite-loop class structurally impossible
+- [x] **Settings panel API fix** — `ctx.ui.custom(factory, options)` shape; `done` callback wired to panel `onClose`
+- [x] Watchdog, `/memory worker`, per-MB download notifications, worker hello message
+
+**Key fix:** An infinite loop in `messagesNotInMemoryIndex` was starving the event loop at 100% CPU. Tool-I/O rows were never inserted into `memory_index`, so they matched the LEFT JOIN on every sweep tick forever — the for-of loop never reached a 32-row batch and the TUI froze. Diagnosed via the side-channel tracer (2.18M `iter_chunk` events, zero `batch_start`). Three-part fix: SQL-level role filter, rowid cursor advance before yield, safety yield every 1024 items.
 
 ---
 
-## Phase 6 — Quality + measurement (next session)
+## ✅ Phase 6 — Benchmarking + quality measurement
 
-Full plan in [NEXT.md](./NEXT.md). Order matters: cleanup, then
-measurement infrastructure, then the cross-encoder, so we can prove
-the quality lift with numbers.
+**Goal:** Evidence-based quality claims. Build infrastructure first, then measure.
 
-- [x] **Housekeeping pass** — dropped `_testing` export from indexer,
-      removed `iter_chunk` trace, folded `log` alias into `events`,
-      un-exported orphans (`getOpenDb`/`getOpenCwd`/`getDbPath`/
-      `REGISTRY`). Tracer doc in README already shipped earlier.
-- [x] **Performance benchmarks** (`bench/perf.ts`) — embed throughput,
-      hook/sweep latencies (p50/p99), recall latency, DB size growth,
-      cold worker warmup. Outputs JSON + markdown summary. Run via
-      `npm run bench:perf` (`PI_LCM_MEMORY_BENCH_QUICK=1` for smoke).
-- [x] **Recall quality benchmarks** (`bench/quality.ts`) — MRR,
-      nDCG@10, recall@5/@10, precision@5 over an eval set. Synthetic
-      eval generated from `BENCH_TOPICS` if no `bench/eval/eval.json`
-      is provided. Run via `npm run bench:quality`.
-- [x] **End-to-end test harness** (`test/e2e/`) — `makeFakePi()`
-      faithful `ExtensionAPI` stub + tmp project + pre-seeded
-      pi-lcm DB. Tests run real worker, real DB, real ONNX. Opt-in
-      via `PI_LCM_MEMORY_LIVE_TEST=1`. Coverage: backfill, lcm_recall,
-      lcm_similar, /memory commands, settings panel factory contract,
-      message_end hook indexing. 7 tests passing in ~500 ms.
-- [x] **Capture baseline** — `bench/results/` snapshots committed.
-- [x] **Real-data eval generator** (`bench/lib/real-eval.ts`) —
-      derives queries from a pi-lcm DB's `summary_sources` DAG, with
-      optional TF×IDF keyword extraction. Reusable for any future
-      retrieval work.
-- [x] **Cross-encoder reranker (evaluated, removed).** Built it,
-      measured it on the user's real DB, found it doesn't carry its
-      weight, reverted. See CHANGELOG § "Phase 6 — cross-encoder
-      reranker: evaluated, removed (post-mortem)" for numbers and
-      root cause. **Decision rule for future quality features: real-
-      data bench wins or it doesn't ship.**
+- [x] **Housekeeping pass** — dropped orphan exports, noisy trace events, alias commands
+- [x] **Performance benchmarks** (`bench/perf.ts`, `npm run bench:perf`) — embed throughput, hook/sweep latencies, recall latency, DB growth
+- [x] **Recall quality benchmarks** (`bench/quality.ts`, `npm run bench:quality`) — MRR, nDCG@10, Recall@K, Precision@K
+- [x] **`bench/lib/real-eval.ts`** — derives eval queries from any pi-lcm DB via `summary_sources` DAG + optional TF×IDF keyword extraction
+- [x] **End-to-end test harness** (`test/e2e/`) — `makeFakePi()` stub + real worker + real ONNX + real DB; opt-in via `PI_LCM_MEMORY_LIVE_TEST=1`
+- [x] **Baseline snapshots** committed to `bench/results/`
+- [x] **Cross-encoder reranker — evaluated and removed** (see below)
+
+### 🔬 Cross-encoder reranker: post-mortem
+
+We built a complete reranker (`Xenova/ms-marco-MiniLM-L-6-v2`) and ran it against the real pi-lcm DB (749 messages, 79 summaries, 57 queries). Synthetic eval: spectacular (+175% MRR). Real-data eval: the opposite.
+
+| Configuration | MRR Δ | nDCG@10 Δ |
+|---|---:|---:|
+| Summary-style query, full corpus | −0.502 | −0.178 |
+| Summary-style query, messages-only | −0.016 | +0.009 |
+| Keyword query, full corpus | −0.269 | −0.096 |
+| Keyword query, messages-only | **+0.139** | **+0.033** |
+
+**Root cause:** cross-encoders trained on MS-MARCO (short query / long passage) promote stylistically-matched passages. pi-lcm summaries are LLM paraphrases — long, prose-heavy — so the reranker demoted messages in favour of summaries (76% summaries in top-10 vs. 5% for hybrid alone). Even in the one winning regime, latency was ~580 ms/query vs. 12 ms for hybrid — 47× slower, wrong shape for auto-recall.
+
+**Takeaway:** The bench infrastructure is the real deliverable. **Every future recall-quality claim must be backed by a `bench/quality.ts` real-data run.**
 
 ---
 
-## Future research (not scheduled)
+## 🔭 Future research
 
-Kept for context; pull into a numbered phase only when actively useful.
-Every item below must be measured against `bench/quality.ts` (real-data
-eval) before shipping.
+> Not scheduled. Pull into a numbered phase only when actively useful.
+> Every item must be measured against `bench/quality.ts` (real-data eval) before shipping.
 
-- [ ] **Tune existing hybrid first.** Before adding any new stage,
-      sweep RRF k, lex/sem candidate breadths, and summary indexing
-      strategy on the real-data eval. Likely cheaper wins than any
-      second-stage feature, and we now have the harness to measure.
-- [ ] **Code / file content indexing** (separate `code_vec` table;
-      AST-aware chunking). User has flagged this as **interesting for
-      future discussion**.
-- [ ] **Memory cards** (manually saved snippets via `/memory save` and a
-      tool). Mirrors a prior local attempt.
-- [ ] **Domain-tuned reranker** (trained on conversational paraphrase
-      pairs, not MS-MARCO). Open research question, not a feature.
-      Public cross-encoders all carry the style-bias documented in
-      the Phase 6 post-mortem.
-- [ ] **Cross-project / workspace-wide recall** (multi-DB query layer).
-- [ ] **MCP wrapper** exposing recall to Claude Code (Q3 deferred path).
-- [ ] **Eviction / retention policy** (e.g., archive after N days, keep
-      summaries). Matters once a heavy user accumulates 100k+ rows.
-- [ ] **Edit / redact memory** (with audit log).
-- [ ] **`PI_LCM_MEMORY_TRACE` toggleable from `/memory trace on|off`** so
-      no relaunch is needed to enable the tracer.
+- [ ] **Tune existing hybrid first** — sweep RRF k, lex/sem candidate breadths, summary indexing strategy. Likely the cheapest next win.
+- [ ] **Code / file content indexing** — separate `code_vec` table, AST-aware chunking. Flagged as interesting for future discussion.
+- [ ] **Memory cards** — manually saved snippets via `/memory save` and a tool. Mirrors a prior local attempt.
+- [ ] **Domain-tuned reranker** — trained on conversational paraphrase pairs (not MS-MARCO). Open research question; public cross-encoders carry the style-bias documented above.
+- [ ] **Cross-project / workspace-wide recall** — multi-DB query layer.
+- [ ] **MCP wrapper** — expose recall to Claude Code (Q3 deferred path).
+- [ ] **Eviction / retention policy** — archive after N days, keep summaries. Matters at 100k+ rows.
+- [ ] **Edit / redact memory** — with audit log.
+- [ ] **`/memory trace on|off`** — toggle tracer without restarting Pi.
 
 ---
 
-## Tracking
+## 📌 Tracking
 
-- Each merged change updates `CHANGELOG.md`.
-- This roadmap is the source of truth for ordering; PLAN.md for *how*.
-- Issues / TODOs that pop up mid-phase are added at the **bottom** of the
-  current phase or under "Stretches", never silently inflated.
+- Merged changes → `CHANGELOG.md`
+- This file is the source of truth for phase ordering; `PLAN.md` covers *how*
+- Issues / TODOs that surface mid-phase are added at the bottom of the current phase, never silently inflated

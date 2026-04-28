@@ -1,13 +1,12 @@
-# Changelog
+# 📝 Changelog
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/).
+Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org/)
 
 ## [Unreleased]
 
-### Phase 6 — cross-encoder reranker: evaluated, removed (post-mortem)
+### 🔬 Phase 6 — Cross-encoder reranker: evaluated and removed (post-mortem)
 
 We built a complete cross-encoder reranker on top of the hybrid recall
 stage (model `Xenova/ms-marco-MiniLM-L-6-v2`, second pipeline in the
@@ -90,7 +89,7 @@ The bench infrastructure built for this turn-around is the real
 deliverable: from now on, **every recall-quality claim must be backed
 by a `bench/quality.ts` real-data run**, not just synthetic numbers.
 
-### Added (Phase 6 — housekeeping + bench infra)
+### ✅ Added (Phase 6 — housekeeping + bench infra)
 
 - **Performance benchmarks** (`bench/perf.ts`, `npm run bench:perf`).
   Captures `worker_warmup_ms`, `embed_throughput`,
@@ -113,7 +112,7 @@ by a `bench/quality.ts` real-data run**, not just synthetic numbers.
 - **Baseline snapshots** committed under `bench/results/` for diff vs.
   reranker.
 
-### Removed (Phase 6 — housekeeping)
+### 🗑️ Removed (Phase 6 — housekeeping)
 
 - `_testing` export from `src/indexer.ts` (no consumers).
 - `iter_chunk` trace event in indexer's processBatched loop (was
@@ -123,7 +122,7 @@ by a `bench/quality.ts` real-data run**, not just synthetic numbers.
   (`getOpenDb`, `getOpenCwd`, `getDbPath`) and
   `src/embeddings/model-registry.ts` (`REGISTRY`).
 
-### Added
+### ✅ Added (Phases 0–1)
 - Repo scaffolded.
 - PLAN.md with locked architecture decisions (Q1–Q9).
 - ROADMAP.md with phased delivery (Phases 0–5).
@@ -164,7 +163,7 @@ by a `bench/quality.ts` real-data run**, not just synthetic numbers.
   - 60 vitest tests, all green (was 44). New suites: diagnostics,
     indexer.batch, commands, bridge.conv.
 
-### Changed (Phase 4 hotfix)
+### 🔧 Changed (Phase 4 hotfix)
 - **Default embedding dtype is now `q8`** (was `auto` → fp32 fallback on
   Node CPU, which produced a Transformers.js console warning and was ~4×
   slower). Quantized weights download instead of full precision; same
@@ -173,7 +172,7 @@ by a `bench/quality.ts` real-data run**, not just synthetic numbers.
   enum: `auto | fp32 | fp16 | q8 | int8 | uint8 | q4 | q4f16`. Settings
   panel exposes the picker.
 
-### Added (Phase 5 — worker thread embedder)
+### ✅ Added (Phase 5 — worker thread embedder)
 - **`src/embeddings/worker.mjs`** owns the @huggingface/transformers pipeline
   in a dedicated `worker_threads` thread. The main event loop is never
   blocked by ONNX inference; the TUI stays fully responsive during
@@ -195,7 +194,7 @@ by a `bench/quality.ts` real-data run**, not just synthetic numbers.
 - `EmbedderState` now exposes `intraOpNumThreads`. `model_loaded`
   diagnostic carries the thread count; init notification mentions it.
 
-### Fixed (Phase 5 — stabilization round)
+### 🐛 Fixed (Phase 5 — stabilization round)
 
 - **Infinite-loop in `messagesNotInMemoryIndex` (THE big one).**
   The bridge generator yielded every row matching `mi.vec_rowid IS NULL`.
@@ -250,7 +249,7 @@ by a `bench/quality.ts` real-data run**, not just synthetic numbers.
   of N separate hash checks; returns Map<hash, vec_rowid> so the indexer
   can record dedupe mappings without a second query.
 
-### Added (debugging infrastructure)
+### 🔍 Added (debugging infrastructure)
 
 - **Side-channel tracer** (`src/trace.ts`). Synchronous file-based event
   log enabled via `PI_LCM_MEMORY_TRACE=1` (default path
