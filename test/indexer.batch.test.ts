@@ -84,6 +84,99 @@ describe("Indexer batched sweep + adaptive backoff", () => {
     expect(emb.calls.reduce((a, b) => a + b, 0)).toBe(80);
   });
 
+  it("sweep terminates when EVERY message is a skipped tool-I/O role (regression: infinite-loop bug)", async () => {
+    // Regression test for the freeze diagnosed via trace logs: 2.18M
+    // iter_chunk events with zero batch_start. The generator was yielding
+    // tool-I/O rows that bridgeMessageToPending dropped via `continue`,
+    // and since they were never inserted into memory_index, the same
+    // rows kept matching `mi.vec_rowid IS NULL` forever.
+    t = makeTestDb();
+    applyPiLcmSchema(t.db);
+    await setupVecAndMigrate(t.db, 8);
+    if (!isVecLoaded()) return;
+
+    seedConversation(t.db, { id: "c1" });
+    // Pure tool-I/O traffic, more than one stmt-batch's worth (SWEEP_BATCH*4 = 128).
+    for (let i = 0; i < 200; i++) {
+      seedMessage(t.db, {
+        id: `t${i}`,
+        conv: "c1",
+        role: i % 2 === 0 ? "toolResult" : "bashExecution",
+        text: `tool output ${i}`,
+        ts: i,
+        seq: i,
+      });
+    }
+    const store = new MemoryStore(t.db);
+    const bridge = new PiLcmBridge(t.db);
+    const emb = new SpyEmbedder(8);
+
+    const idx = new Indexer({
+      store,
+      embedder: emb as any,
+      bridge,
+      config: { ...baseConfig, skipToolIO: true },
+      conversationId: () => "c1",
+      sessionStartedAt: () => 1,
+    });
+
+    // Wrap tick in a hard timeout: pre-fix this would never return.
+    const tickPromise = idx.tick();
+    const timed = await Promise.race([
+      tickPromise.then(() => "done"),
+      new Promise<string>((r) => setTimeout(() => r("timeout"), 2_000)),
+    ]);
+    expect(timed).toBe("done");
+    expect(emb.calls.length).toBe(0); // nothing to embed
+    expect(store.stats().byMessage).toBe(0);
+  });
+
+  it("sweep with mixed tool-I/O and real messages indexes only the real ones and terminates", async () => {
+    t = makeTestDb();
+    applyPiLcmSchema(t.db);
+    await setupVecAndMigrate(t.db, 8);
+    if (!isVecLoaded()) return;
+
+    seedConversation(t.db, { id: "c1" });
+    let id = 0;
+    // 150 tool-I/O messages interleaved with 30 real ones. Mixing matters
+    // because the rowid cursor must advance past skipped rows.
+    for (let i = 0; i < 180; i++) {
+      const isReal = i % 6 === 0; // 30 real, 150 skipped
+      seedMessage(t.db, {
+        id: `m${id++}`,
+        conv: "c1",
+        role: isReal ? "user" : "toolResult",
+        text: isReal ? `real message ${i}` : `tool output ${i}`,
+        ts: i,
+        seq: i,
+      });
+    }
+    const store = new MemoryStore(t.db);
+    const bridge = new PiLcmBridge(t.db);
+    const emb = new SpyEmbedder(8);
+
+    const idx = new Indexer({
+      store,
+      embedder: emb as any,
+      bridge,
+      config: { ...baseConfig, skipToolIO: true },
+      conversationId: () => "c1",
+      sessionStartedAt: () => 1,
+    });
+
+    const tickPromise = idx.tick();
+    const timed = await Promise.race([
+      tickPromise.then(() => "done"),
+      new Promise<string>((r) => setTimeout(() => r("timeout"), 2_000)),
+    ]);
+    expect(timed).toBe("done");
+    expect(store.stats().byMessage).toBe(30);
+    // 30 messages → 1 batch of 30 (all under SWEEP_BATCH=32).
+    expect(emb.calls.length).toBe(1);
+    expect(emb.calls[0]).toBe(30);
+  });
+
   it("adaptive backoff: idle ticks grow interval; kick resets it", async () => {
     t = makeTestDb();
     applyPiLcmSchema(t.db);

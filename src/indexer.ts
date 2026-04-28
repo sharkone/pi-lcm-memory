@@ -183,7 +183,9 @@ export class Indexer {
       if (this.deps.config.indexMessages) {
         trace("sweep_messages_start");
         await this.processBatched(
-          this.deps.bridge.messagesNotInMemoryIndex(SWEEP_BATCH * 4),
+          this.deps.bridge.messagesNotInMemoryIndex(SWEEP_BATCH * 4, {
+            skipToolIO: this.deps.config.skipToolIO,
+          }),
           (m: PiLcmMessage) => this.bridgeMessageToPending(m),
         );
         trace("sweep_messages_end");
@@ -223,18 +225,27 @@ export class Indexer {
     let batch: PendingRow[] = [];
     let scanned = 0;
     let batchIdx = 0;
+    let lastYield = 0;
     trace("process_start");
     const tIter0 = Date.now();
     let tIterChunk = tIter0;
     for (const item of iter) {
       if (this.stopped) break;
       scanned++;
-      // Trace the cost of pulling rows from pi-lcm tables itself — if the
-      // freeze is a slow LEFT JOIN, this is where it'll show up.
       if (scanned % 64 === 0) {
         const now = Date.now();
         trace("iter_chunk", { scanned, ms: now - tIterChunk });
         tIterChunk = now;
+      }
+      // SAFETY NET: yield to the event loop every 1024 iterated items even
+      // if no batch has fired. Protects the TUI against any future bug that
+      // causes toPending() to return null for a long run of rows. Without
+      // this, the for-of loop is pure sync JS and can starve the event loop
+      // for seconds (which is exactly the freeze we just diagnosed).
+      if (scanned - lastYield >= 1024) {
+        lastYield = scanned;
+        trace("safety_yield", { scanned, batchSoFar: batch.length });
+        await yieldToEventLoop();
       }
       const p = toPending(item);
       if (!p) continue;
@@ -243,9 +254,8 @@ export class Indexer {
         batchIdx++;
         await this.embedAndStoreBatch(batch, batchIdx);
         batch = [];
+        lastYield = scanned;
         // Even with batched inserts, bursts of activity can starve the TUI.
-        // setImmediate gives the event loop a chance to render keystrokes,
-        // status updates, etc., between sweep batches.
         await yieldToEventLoop();
       }
     }

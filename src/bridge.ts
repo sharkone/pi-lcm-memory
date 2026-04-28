@@ -55,22 +55,54 @@ export class PiLcmBridge {
     };
   }
 
-  /** Iterate all message ids/text pairs not yet in our index. Used by sweep. */
-  *messagesNotInMemoryIndex(batchSize: number): Generator<PiLcmMessage> {
+  /**
+   * Iterate all messages not yet in our index. Used by sweep.
+   *
+   * IMPORTANT: this generator MUST make forward progress on every iteration
+   * to avoid the infinite-loop bug we hit before. Two safeguards:
+   *
+   * 1. SQL-level filter: rows that the indexer would skip in JS
+   *    (tool I/O, empty content) are excluded at the query level so they
+   *    never appear here. They can't be inserted into memory_index, so a
+   *    naive `mi.vec_rowid IS NULL` check would keep matching them forever.
+   *
+   * 2. Rowid cursor: each iteration filters `m.rowid > lastRowid` and
+   *    advances lastRowid for every row we yield. Even if a row sneaks
+   *    past the SQL filter and the consumer can't index it, we will
+   *    never see it again in this sweep — the cursor only moves forward.
+   */
+  *messagesNotInMemoryIndex(
+    batchSize: number,
+    opts: { skipToolIO?: boolean } = {},
+  ): Generator<PiLcmMessage> {
     if (!this.hasMessages) return;
+    const skipToolIO = opts.skipToolIO ?? true;
     const stmt = this.db.prepare(
-      `SELECT m.id, m.conversation_id, m.role, m.content_text, m.timestamp, m.seq
+      `SELECT m.rowid AS message_rowid,
+              m.id, m.conversation_id, m.role, m.content_text, m.timestamp, m.seq
          FROM messages m
          LEFT JOIN memory_index mi ON mi.pi_lcm_msg_id = m.id
          WHERE mi.vec_rowid IS NULL
-         ORDER BY m.timestamp ASC
+           AND m.content_text IS NOT NULL
+           AND length(m.content_text) > 0
+           AND (? = 0 OR m.role NOT IN ('toolResult', 'bashExecution'))
+           AND m.rowid > ?
+         ORDER BY m.rowid ASC
          LIMIT ?`,
     );
 
+    let lastRowid = 0;
     while (true) {
-      const rows = stmt.all(batchSize) as PiLcmMessage[];
+      const rows = stmt.all(skipToolIO ? 1 : 0, lastRowid, batchSize) as (PiLcmMessage & {
+        message_rowid: number;
+      })[];
       if (rows.length === 0) return;
-      for (const r of rows) yield r;
+      for (const r of rows) {
+        // Advance the cursor BEFORE yielding so that even if the consumer
+        // throws or stops, the next stmt.all() call won't reconsider this row.
+        lastRowid = r.message_rowid;
+        yield r;
+      }
       if (rows.length < batchSize) return;
     }
   }
@@ -78,17 +110,27 @@ export class PiLcmBridge {
   *summariesNotInMemoryIndex(batchSize: number): Generator<PiLcmSummary> {
     if (!this.hasSummaries) return;
     const stmt = this.db.prepare(
-      `SELECT s.id, s.conversation_id, s.depth, s.text, s.created_at
+      `SELECT s.rowid AS summary_rowid,
+              s.id, s.conversation_id, s.depth, s.text, s.created_at
          FROM summaries s
          LEFT JOIN memory_index mi ON mi.pi_lcm_sum_id = s.id
          WHERE mi.vec_rowid IS NULL
-         ORDER BY s.created_at ASC
+           AND s.text IS NOT NULL
+           AND length(s.text) > 0
+           AND s.rowid > ?
+         ORDER BY s.rowid ASC
          LIMIT ?`,
     );
+    let lastRowid = 0;
     while (true) {
-      const rows = stmt.all(batchSize) as PiLcmSummary[];
+      const rows = stmt.all(lastRowid, batchSize) as (PiLcmSummary & {
+        summary_rowid: number;
+      })[];
       if (rows.length === 0) return;
-      for (const r of rows) yield r;
+      for (const r of rows) {
+        lastRowid = r.summary_rowid;
+        yield r;
+      }
       if (rows.length < batchSize) return;
     }
   }
