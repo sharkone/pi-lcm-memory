@@ -159,6 +159,19 @@ export class PiLcmBridge {
       .get() as { at: string | null };
     return r.at;
   }
+
+  /** Best-effort capture of the conversation pi-lcm just wrote into. */
+  latestConversationId(): string | null {
+    if (!this.hasMessages) return null;
+    try {
+      const r = this.db
+        .prepare("SELECT conversation_id FROM messages ORDER BY rowid DESC LIMIT 1")
+        .get() as { conversation_id?: string } | undefined;
+      return r?.conversation_id ?? null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 function tableExists(db: Database.Database, name: string): boolean {

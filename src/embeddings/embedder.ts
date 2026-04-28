@@ -27,7 +27,17 @@ export interface EmbedderState {
   model: string;
   dims: number;
   ready: boolean;
+  loading: boolean;
+  downloading: boolean;
+  downloadedBytes: number;
+  totalBytes: number | null;
   error: string | null;
+}
+
+export interface EmbedderEventListener {
+  onProgress?: (e: { file: string; loaded: number; total: number | null }) => void;
+  onLoaded?: () => void;
+  onError?: (msg: string) => void;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -39,12 +49,21 @@ export class Embedder {
   private dims: number | null = null;
   private loadPromise: Promise<void> | null = null;
   private error: string | null = null;
+  private loading = false;
+  private downloading = false;
+  private downloadedBytes = 0;
+  private totalBytes: number | null = null;
+  private listener: EmbedderEventListener | null = null;
 
   constructor(opts: EmbedderOptions) {
     this.opts = opts;
     // Pre-fill dims from registry so callers can build the schema before load.
     const known = lookupModel(opts.model);
     if (known) this.dims = known.dims;
+  }
+
+  setListener(l: EmbedderEventListener | null): void {
+    this.listener = l;
   }
 
   /** Resolve known dim without loading the model. Returns null if unknown. */
@@ -57,6 +76,10 @@ export class Embedder {
       model: this.opts.model,
       dims: this.dims ?? 0,
       ready: this.pipe !== null,
+      loading: this.loading,
+      downloading: this.downloading,
+      downloadedBytes: this.downloadedBytes,
+      totalBytes: this.totalBytes,
       error: this.error,
     };
   }
@@ -86,37 +109,61 @@ export class Embedder {
   }
 
   private async load(): Promise<void> {
+    this.loading = true;
     try {
       const cacheDir = this.opts.cacheDir ?? join(homedir(), ".cache", "pi-lcm-memory", "models");
       mkdirSync(cacheDir, { recursive: true });
 
       const tf: any = await import("@huggingface/transformers");
-      // Configure cache dir + quiet logging.
       if (tf.env) {
         tf.env.cacheDir = cacheDir;
         tf.env.allowLocalModels = true;
         tf.env.allowRemoteModels = true;
       }
 
-      const pipelineOpts: Record<string, unknown> = {};
+      const pipelineOpts: Record<string, unknown> = {
+        progress_callback: (p: any) => this.handleProgress(p),
+      };
       if (this.opts.quantize === "int8") pipelineOpts.dtype = "int8";
       else if (this.opts.quantize === "fp32") pipelineOpts.dtype = "fp32";
-      // "auto" → leave it to Transformers.js defaults.
 
       const pipe = await tf.pipeline("feature-extraction", this.opts.model, pipelineOpts);
       this.pipe = pipe as Pipeline;
 
-      // If we don't know the dim yet, run a single warmup pass to discover it.
       if (this.dims == null) {
         const probe = await this.pipe("test", { pooling: "mean", normalize: true });
         const arrs = tensorToFloat32Arrays(probe, 1);
         this.dims = arrs[0]?.length ?? 0;
         if (!this.dims) throw new Error("could not determine embedding dim from probe");
       }
+      this.downloading = false;
+      this.listener?.onLoaded?.();
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : String(e);
       this.pipe = null;
+      this.listener?.onError?.(this.error);
       throw e;
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  private handleProgress(p: any): void {
+    // Transformers.js progress events: { status: 'progress'|'download'|'done'|'ready',
+    //   file?: string, progress?: number, loaded?: number, total?: number, name?: string }
+    if (!p || typeof p !== "object") return;
+    const status = (p as { status?: string }).status;
+    const loaded = typeof (p as { loaded?: number }).loaded === "number" ? (p as { loaded: number }).loaded : 0;
+    const total = typeof (p as { total?: number }).total === "number" ? (p as { total: number }).total : null;
+    const file = typeof (p as { file?: string }).file === "string" ? (p as { file: string }).file : "";
+
+    if (status === "download" || status === "progress") {
+      this.downloading = true;
+      if (loaded > this.downloadedBytes) this.downloadedBytes = loaded;
+      if (total != null) this.totalBytes = total;
+      this.listener?.onProgress?.({ file, loaded, total });
+    } else if (status === "done" || status === "ready") {
+      this.downloading = false;
     }
   }
 }

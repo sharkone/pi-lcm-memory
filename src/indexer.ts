@@ -11,7 +11,7 @@
 
 import { contentHash, extractIndexableText, makeSnippet, estimateTokens } from "./utils.js";
 import type { Embedder } from "./embeddings/embedder.js";
-import type { MemoryStore } from "./db/store.js";
+import type { MemoryStore, InsertArgs } from "./db/store.js";
 import type { PiLcmBridge, PiLcmMessage, PiLcmSummary } from "./bridge.js";
 import type { MemoryConfig } from "./config.js";
 
@@ -25,7 +25,19 @@ export interface IndexerDeps {
   conversationId: () => string | null;
   sessionStartedAt: () => number | null;
   notify?: Notify;
+  /** Optional structured-log sink. Default: noop. */
+  log?: (event: string, data?: Record<string, unknown>) => void;
 }
+
+/** Pending row awaiting embedding (used for batched sweep). */
+interface PendingRow {
+  text: string;
+  args: Omit<InsertArgs, "embedding" | "model_dims">;
+}
+
+const SWEEP_BATCH = 32;
+const SWEEP_BACKOFF_MIN_MS = 5_000;
+const SWEEP_BACKOFF_MAX_MS = 5 * 60_000;
 
 export class Indexer {
   private deps: IndexerDeps;
@@ -36,25 +48,23 @@ export class Indexer {
   private lastError: string | null = null;
   private cycles = 0;
   private indexedThisCycle = 0;
+  private indexedTotal = 0;
+  private currentInterval = 0;
+  private idleStreak = 0;
 
   constructor(deps: IndexerDeps) {
     this.deps = deps;
+    this.currentInterval = deps.config.sweepIntervalMs;
   }
 
   start(): void {
     if (this.timer || this.stopped) return;
-    const tick = () => {
-      this.tick().catch(() => {
-        /* lastError already set */
-      });
-    };
-    this.timer = setInterval(tick, this.deps.config.sweepIntervalMs);
-    if (typeof this.timer.unref === "function") this.timer.unref();
+    this.scheduleNext(this.deps.config.sweepIntervalMs);
   }
 
   stop(): void {
     this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
 
@@ -63,8 +73,62 @@ export class Indexer {
     await this.inflight;
   }
 
-  status(): { busy: boolean; cycles: number; lastError: string | null } {
-    return { busy: this.busy, cycles: this.cycles, lastError: this.lastError };
+  status(): {
+    busy: boolean;
+    cycles: number;
+    lastError: string | null;
+    indexedTotal: number;
+    currentIntervalMs: number;
+    idleStreak: number;
+  } {
+    return {
+      busy: this.busy,
+      cycles: this.cycles,
+      lastError: this.lastError,
+      indexedTotal: this.indexedTotal,
+      currentIntervalMs: this.currentInterval,
+      idleStreak: this.idleStreak,
+    };
+  }
+
+  /** Force the next sweep to run immediately and reset backoff. */
+  kick(): void {
+    if (this.stopped) return;
+    this.idleStreak = 0;
+    this.currentInterval = this.deps.config.sweepIntervalMs;
+    if (this.timer) clearTimeout(this.timer);
+    this.scheduleNext(0);
+  }
+
+  private scheduleNext(ms: number): void {
+    if (this.stopped) return;
+    const handle = setTimeout(() => {
+      this.timer = null;
+      this.tick()
+        .catch(() => {
+          /* lastError already set */
+        })
+        .finally(() => {
+          // Adaptive backoff: idle ticks double the interval (cap 5min); a productive
+          // tick resets to base. New work via kick() also resets.
+          if (this.indexedThisCycle === 0) {
+            this.idleStreak += 1;
+            this.currentInterval = Math.min(
+              SWEEP_BACKOFF_MAX_MS,
+              Math.max(
+                SWEEP_BACKOFF_MIN_MS,
+                this.deps.config.sweepIntervalMs * Math.pow(2, Math.min(this.idleStreak, 5)),
+              ),
+            );
+          } else {
+            this.idleStreak = 0;
+            this.currentInterval = this.deps.config.sweepIntervalMs;
+          }
+          this.scheduleNext(this.currentInterval);
+        });
+    }, ms);
+    if (typeof handle.unref === "function") handle.unref();
+    this.timer = handle;
   }
 
   /** Hook entrypoint: queue an AgentMessage for embedding. Never throws. */
@@ -95,58 +159,109 @@ export class Indexer {
     if (this.busy || this.stopped) return;
     this.busy = true;
     this.indexedThisCycle = 0;
+    const t0 = Date.now();
     try {
+      // Ensure embedder is ready before walking large backlogs (avoids per-row
+      // warmup cost). Best-effort: if it fails, individual embeds still try.
+      await this.deps.embedder.warmup().catch(() => {});
+
       if (this.deps.config.indexMessages) {
-        for (const m of this.deps.bridge.messagesNotInMemoryIndex(64)) {
-          if (this.stopped) break;
-          await this.embedFromBridgeMessage(m);
-        }
+        await this.processBatched(
+          this.deps.bridge.messagesNotInMemoryIndex(SWEEP_BATCH * 4),
+          (m: PiLcmMessage) => this.bridgeMessageToPending(m),
+        );
       }
       if (this.deps.config.indexSummaries) {
-        for (const s of this.deps.bridge.summariesNotInMemoryIndex(64)) {
-          if (this.stopped) break;
-          await this.embedFromBridgeSummary(s);
-        }
+        await this.processBatched(
+          this.deps.bridge.summariesNotInMemoryIndex(SWEEP_BATCH * 4),
+          (s: PiLcmSummary) => this.bridgeSummaryToPending(s),
+        );
       }
       this.cycles += 1;
       this.lastError = null;
+      this.deps.log?.("sweep_done", {
+        cycle: this.cycles,
+        indexed: this.indexedThisCycle,
+        ms: Date.now() - t0,
+      });
     } catch (e: unknown) {
       this.lastError = e instanceof Error ? e.message : String(e);
+      this.deps.log?.("sweep_failed", { error: this.lastError });
       this.notify(`sweep failed: ${this.lastError}`, "warning");
     } finally {
       this.busy = false;
     }
   }
 
-  private async embedFromBridgeMessage(m: PiLcmMessage): Promise<void> {
-    const skipToolIO = this.deps.config.skipToolIO;
-    const indexable = !isToolIORole(m.role) || !skipToolIO;
-    if (!indexable) return;
-    if (!m.content_text) return;
-    await this.embedAndStore({
-      kind: "message",
-      role: m.role,
-      text: m.content_text,
-      piLcmMsgId: m.id,
-      piLcmSumId: null,
-      conversationId: m.conversation_id,
-      sessionStartedAt: m.timestamp,
-      depth: null,
-    });
+  /** Pull all pending rows from a generator, embed in batches, insert. */
+  private async processBatched<T>(
+    iter: Iterable<T>,
+    toPending: (item: T) => PendingRow | null,
+  ): Promise<void> {
+    let batch: PendingRow[] = [];
+    for (const item of iter) {
+      if (this.stopped) break;
+      const p = toPending(item);
+      if (!p) continue;
+      batch.push(p);
+      if (batch.length >= SWEEP_BATCH) {
+        await this.embedAndStoreBatch(batch);
+        batch = [];
+      }
+    }
+    if (batch.length > 0 && !this.stopped) await this.embedAndStoreBatch(batch);
   }
 
-  private async embedFromBridgeSummary(s: PiLcmSummary): Promise<void> {
-    if (!s.text) return;
-    await this.embedAndStore({
-      kind: "summary",
-      role: null,
+  private bridgeMessageToPending(m: PiLcmMessage): PendingRow | null {
+    const skipToolIO = this.deps.config.skipToolIO;
+    const indexable = !isToolIORole(m.role) || !skipToolIO;
+    if (!indexable || !m.content_text) return null;
+    return {
+      text: m.content_text,
+      args: this.argsForBridgeMessage(m),
+    };
+  }
+
+  private bridgeSummaryToPending(s: PiLcmSummary): PendingRow | null {
+    if (!s.text) return null;
+    return {
       text: s.text,
-      piLcmMsgId: null,
-      piLcmSumId: s.id,
-      conversationId: s.conversation_id,
-      sessionStartedAt: parseDate(s.created_at),
+      args: this.argsForBridgeSummary(s),
+    };
+  }
+
+  private argsForBridgeMessage(m: PiLcmMessage): Omit<InsertArgs, "embedding" | "model_dims"> {
+    return {
+      source_kind: "message",
+      content_hash: contentHash(m.role, m.content_text, this.deps.embedder.knownDims() ?? 0, this.deps.config.embeddingModel),
+      pi_lcm_msg_id: m.id,
+      pi_lcm_sum_id: null,
+      conversation_id: m.conversation_id,
+      session_started: m.timestamp,
+      role: m.role,
+      depth: null,
+      snippet: makeSnippet(m.content_text),
+      text_full: m.content_text,
+      token_count: estimateTokens(m.content_text),
+      model_name: this.deps.config.embeddingModel,
+    };
+  }
+
+  private argsForBridgeSummary(s: PiLcmSummary): Omit<InsertArgs, "embedding" | "model_dims"> {
+    return {
+      source_kind: "summary",
+      content_hash: contentHash("summary", s.text, this.deps.embedder.knownDims() ?? 0, this.deps.config.embeddingModel),
+      pi_lcm_msg_id: null,
+      pi_lcm_sum_id: s.id,
+      conversation_id: s.conversation_id,
+      session_started: parseDate(s.created_at),
+      role: null,
       depth: s.depth,
-    });
+      snippet: makeSnippet(s.text),
+      text_full: s.text,
+      token_count: estimateTokens(s.text),
+      model_name: this.deps.config.embeddingModel,
+    };
   }
 
   private async embedAndStore(args: {
@@ -159,15 +274,10 @@ export class Indexer {
     sessionStartedAt: number | null;
     depth: number | null;
   }): Promise<void> {
-    const dims = this.deps.embedder.knownDims();
-    const model = this.deps.config.embeddingModel;
-    if (!dims) {
-      // Force a warmup so dim is resolved.
-      await this.deps.embedder.warmup();
-    }
-
+    if (!this.deps.embedder.knownDims()) await this.deps.embedder.warmup();
     const finalDims = this.deps.embedder.knownDims() ?? 0;
     if (finalDims === 0) throw new Error("embedder has no dim after warmup");
+    const model = this.deps.config.embeddingModel;
 
     const hash = contentHash(args.role ?? args.kind, args.text, finalDims, model);
     if (this.deps.store.hasContentHash(hash)) return;
@@ -175,7 +285,6 @@ export class Indexer {
     const [vec] = await this.deps.embedder.embed(args.text);
     if (!vec) return;
 
-    const snippet = makeSnippet(args.text);
     this.deps.store.insert({
       source_kind: args.kind,
       content_hash: hash,
@@ -186,13 +295,36 @@ export class Indexer {
       session_started: args.sessionStartedAt,
       role: args.role,
       depth: args.depth,
-      snippet,
+      snippet: makeSnippet(args.text),
       text_full: args.text,
       token_count: estimateTokens(args.text),
       model_name: model,
       model_dims: finalDims,
     });
     this.indexedThisCycle += 1;
+    this.indexedTotal += 1;
+  }
+
+  /** Embed an entire batch of pending rows in a single inference call. */
+  private async embedAndStoreBatch(batch: PendingRow[]): Promise<void> {
+    if (batch.length === 0) return;
+    if (!this.deps.embedder.knownDims()) await this.deps.embedder.warmup();
+    const dims = this.deps.embedder.knownDims() ?? 0;
+    if (dims === 0) throw new Error("embedder has no dim after warmup");
+
+    // Skip rows that are already indexed (raced with hook path).
+    const fresh = batch.filter((p) => !this.deps.store.hasContentHash(p.args.content_hash));
+    if (fresh.length === 0) return;
+
+    const vectors = await this.deps.embedder.embed(fresh.map((p) => p.text));
+    for (let i = 0; i < fresh.length; i++) {
+      const v = vectors[i];
+      const p = fresh[i];
+      if (!v || !p) continue;
+      this.deps.store.insert({ ...p.args, embedding: v, model_dims: dims });
+      this.indexedThisCycle += 1;
+      this.indexedTotal += 1;
+    }
   }
 
   private notify(message: string, level: "info" | "warning" | "error" = "info"): void {
@@ -201,6 +333,8 @@ export class Indexer {
     }
   }
 }
+
+export const _testing = { SWEEP_BATCH, SWEEP_BACKOFF_MIN_MS, SWEEP_BACKOFF_MAX_MS };
 
 function isToolIORole(role: string): boolean {
   return role === "toolResult" || role === "bashExecution";

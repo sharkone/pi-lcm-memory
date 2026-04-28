@@ -15,7 +15,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { resolveConfig, type MemoryConfig } from "./src/config.js";
 import { loadSettings, saveSettings, type SettingsScope } from "./src/settings.js";
 import { openDb, closeDb } from "./src/db/connection.js";
-import { ensureVecLoaded, isVecLoaded, vecError } from "./src/db/vec.js";
+import { ensureVecLoaded, isVecLoadedFor, vecError } from "./src/db/vec.js";
 import { runMigrations } from "./src/db/schema.js";
 import { MemoryStore } from "./src/db/store.js";
 import { Embedder } from "./src/embeddings/embedder.js";
@@ -30,6 +30,7 @@ import { updateStatus } from "./src/status.js";
 import { createLcmRecallTool } from "./src/tools/lcm-recall.js";
 import { createLcmSimilarTool } from "./src/tools/lcm-similar.js";
 import { MemorySettingsPanel } from "./src/settings-panel.js";
+import { Diagnostics } from "./src/diagnostics.js";
 
 export default function (pi: ExtensionAPI) {
   let config: MemoryConfig = resolveConfig();
@@ -40,12 +41,14 @@ export default function (pi: ExtensionAPI) {
   let embedder: Embedder | null = null;
   let indexer: Indexer | null = null;
   let retriever: Retriever | null = null;
+  let diagnostics: Diagnostics | null = null;
 
   let cwd: string | null = null;
   let conversationId: string | null = null;
   let sessionStartedAt: number | null = null;
   let settingsScope: SettingsScope = "global";
   let primerEmitted = false;
+  let modelDownloadAnnounced = false;
 
   const getStore = () => store;
   const getBridge = () => bridge;
@@ -60,10 +63,14 @@ export default function (pi: ExtensionAPI) {
       store,
       retriever,
       indexer,
+      diagnostics,
       config,
       cwd,
       settingsScope,
       openSettingsPanel: openSettingsPanel,
+      onConfigChange: (cfg) => {
+        config = cfg;
+      },
     };
   }
 
@@ -87,6 +94,34 @@ export default function (pi: ExtensionAPI) {
       quantize: config.embeddingQuantize,
       cacheDir: config.modelCacheDir,
     });
+    embedder.setListener({
+      onProgress: ({ file, loaded, total }) => {
+        if (!modelDownloadAnnounced) {
+          modelDownloadAnnounced = true;
+          const sz = total ? `${(total / 1024 / 1024).toFixed(1)} MB` : "unknown size";
+          ctx.ui?.notify?.(
+            `[pi-lcm-memory] downloading embedding model ${config.embeddingModel} (${sz})…`,
+            "info",
+          );
+          diagnostics?.log("model_download_start", { model: config.embeddingModel, total });
+        }
+        // throttle status updates by relying on render cadence; setStatus is cheap.
+        updateStatus(store, indexer, embedder, ctx);
+        if (config.debugMode && total && loaded === total) {
+          ctx.ui?.notify?.(`[pi-lcm-memory] downloaded ${file}`, "info");
+        }
+      },
+      onLoaded: () => {
+        diagnostics?.log("model_loaded", { model: config.embeddingModel, dims: embedder?.knownDims() ?? null });
+        updateStatus(store, indexer, embedder, ctx);
+        // Kick a sweep so backfill begins immediately once weights are warm.
+        indexer?.kick();
+      },
+      onError: (msg) => {
+        diagnostics?.log("model_error", { model: config.embeddingModel, error: msg });
+        ctx.ui?.notify?.(`[pi-lcm-memory] model load failed: ${msg}`, "warning");
+      },
+    });
 
     const known = lookupModel(config.embeddingModel);
     const dim = known?.dims ?? 384; // Default to 384 for unknown; reconciled after warmup.
@@ -95,6 +130,7 @@ export default function (pi: ExtensionAPI) {
 
     store = new MemoryStore(db);
     bridge = new PiLcmBridge(db);
+    diagnostics = new Diagnostics(db);
 
     indexer = new Indexer({
       store,
@@ -104,6 +140,7 @@ export default function (pi: ExtensionAPI) {
       conversationId: getConvId,
       sessionStartedAt: getStarted,
       notify: (msg, level) => ctx.ui?.notify?.(msg, level ?? "info"),
+      log: (event, data) => diagnostics?.log(event, data),
     });
     indexer.start();
 
@@ -117,22 +154,25 @@ export default function (pi: ExtensionAPI) {
 
     sessionStartedAt = Math.floor(Date.now() / 1000);
     primerEmitted = false;
+    modelDownloadAnnounced = false;
 
-    // Try to align conversationId with pi-lcm's so filters work cleanly.
-    // We can't reliably know it until pi-lcm processes the same session_start;
-    // it'll be filled lazily on first message_end via getOrAlignConversation.
+    diagnostics.log("session_start", {
+      model: config.embeddingModel,
+      vec: isVecLoadedFor(db),
+      vecError: vecError(),
+    });
 
     if (config.debugMode) {
       const s = store.stats();
       ctx.ui?.notify?.(
         `[pi-lcm-memory] init: model=${config.embeddingModel} dim=${s.modelDims ?? "?"} ` +
-          `indexed=${s.indexed} vec=${isVecLoaded() ? "✓" : "✗"}` +
+          `indexed=${s.indexed} vec=${isVecLoadedFor(db) ? "✓" : "✗"}` +
           (vecError() ? ` (${vecError()})` : ""),
         "info",
       );
     }
 
-    updateStatus(store, indexer, ctx);
+    updateStatus(store, indexer, embedder, ctx);
 
     // Background warmup of the embedder so first query is fast.
     embedder.warmup().catch((e: unknown) => {
@@ -148,10 +188,12 @@ export default function (pi: ExtensionAPI) {
     bridge = null;
     embedder = null;
     retriever = null;
+    diagnostics = null;
     cwd = null;
     conversationId = null;
     sessionStartedAt = null;
     primerEmitted = false;
+    modelDownloadAnnounced = false;
     closeDb();
   }
 
@@ -197,13 +239,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_end", async (event: any, ctx: any) => {
     try {
       if (!indexer) return;
-      // Try to capture conversation_id once we have something.
-      if (!conversationId && bridge && event?.message) {
-        // Best-effort: pi-lcm will have written its own row; we can't see id
-        // synchronously, but the sweep will pick it up.
+      // Lazy capture of conversation_id: pi-lcm writes its row before our sweep
+      // would notice; we can read the most recent row from the bridge.
+      if (!conversationId && bridge) {
+        conversationId = bridge.latestConversationId();
       }
       indexer.handleMessage(event?.message ?? null, null);
-      updateStatus(store, indexer, ctx);
+      updateStatus(store, indexer, embedder, ctx);
     } catch (e: any) {
       if (config.debugMode) ctx.ui?.notify?.(`message_end: ${e?.message ?? e}`, "warning");
     }
@@ -211,8 +253,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_before_compact", async (_event: any, ctx: any) => {
     // pi-lcm runs compaction; we'll see new summaries in the next sweep tick.
-    indexer?.tick().catch(() => {});
-    updateStatus(store, indexer, ctx);
+    diagnostics?.log("compact_observed");
+    indexer?.kick();
+    updateStatus(store, indexer, embedder, ctx);
   });
 
   pi.on("context", async (event: any, _ctx: any) => {
@@ -254,6 +297,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event: any, _ctx: any) => {
     try {
+      diagnostics?.log("session_shutdown");
       await indexer?.drain();
     } finally {
       resetState();

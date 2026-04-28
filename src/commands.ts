@@ -6,6 +6,7 @@ import type { MemoryStore } from "./db/store.js";
 import type { Retriever } from "./retrieval.js";
 import type { Indexer } from "./indexer.js";
 import type { MemoryConfig } from "./config.js";
+import type { Diagnostics } from "./diagnostics.js";
 import { listModelNames } from "./embeddings/model-registry.js";
 import { saveSettings, type SettingsScope } from "./settings.js";
 
@@ -13,10 +14,13 @@ export interface CommandState {
   store: MemoryStore | null;
   retriever: Retriever | null;
   indexer: Indexer | null;
+  diagnostics: Diagnostics | null;
   config: MemoryConfig;
   cwd: string | null;
   settingsScope: SettingsScope;
   openSettingsPanel: ((ctx: any) => void) | null;
+  /** Hook so the host can update its config snapshot when /memory model writes. */
+  onConfigChange?: (cfg: MemoryConfig) => void;
 }
 
 export async function handleMemoryCommand(
@@ -46,6 +50,9 @@ export async function handleMemoryCommand(
       return doModel(state, rest, ctx);
     case "settings":
       return openSettings(state, ctx);
+    case "events":
+    case "log":
+      return printEvents(state, ctx);
     default:
       ctx.ui.notify(`unknown subcommand: ${sub}. Try /memory help.`, "warning");
   }
@@ -54,13 +61,14 @@ export async function handleMemoryCommand(
 function printHelp(ctx: any): void {
   ctx.ui.notify(
     [
-      "/memory stats             — counts, model, dim, db size",
-      "/memory status            — sweep cycles, busy, last error",
-      "/memory search <query>    — ad-hoc lcm_recall",
-      "/memory reindex [scope]   — wipe & re-embed (kind=message|summary|all)",
-      "/memory clear             — drop all embeddings (sweep will rebuild)",
-      "/memory model <name>      — change embedding model (triggers reindex)",
-      "/memory settings          — open settings panel",
+      "/memory stats               — counts, model, dim, db size",
+      "/memory status              — sweep cycles, busy, last error, interval",
+      "/memory search <query>      — ad-hoc lcm_recall",
+      "/memory reindex             — wipe & re-embed everything",
+      "/memory clear [--yes]       — drop all embeddings (sweep will rebuild)",
+      "/memory model <name>        — change embedding model (triggers reindex)",
+      "/memory events              — last 20 diagnostic events",
+      "/memory settings            — open settings panel",
       "",
       "models: " + listModelNames().join(", "),
     ].join("\n"),
@@ -94,10 +102,36 @@ function printStatus(state: CommandState, ctx: any): void {
     return;
   }
   const st = indexer.status();
+  const interval = (st.currentIntervalMs / 1000).toFixed(0);
   ctx.ui.notify(
-    `pi-lcm-memory: ${st.busy ? "running" : "idle"} | cycles ${st.cycles} | last error: ${st.lastError ?? "none"}`,
+    [
+      `pi-lcm-memory: ${st.busy ? "running" : "idle"}`,
+      `  cycles: ${st.cycles}`,
+      `  indexed total: ${st.indexedTotal}`,
+      `  next sweep in ~${interval}s (idle streak: ${st.idleStreak})`,
+      `  last error: ${st.lastError ?? "none"}`,
+    ].join("\n"),
     "info",
   );
+}
+
+function printEvents(state: CommandState, ctx: any): void {
+  const diag = state.diagnostics;
+  if (!diag) {
+    ctx.ui.notify("pi-lcm-memory not initialized.", "warning");
+    return;
+  }
+  const events = diag.recent(20);
+  if (events.length === 0) {
+    ctx.ui.notify("no events recorded yet", "info");
+    return;
+  }
+  const lines = events.map((e) => {
+    const when = new Date(e.ts * 1000).toISOString().replace("T", " ").slice(0, 19);
+    const data = e.data ? " " + JSON.stringify(e.data) : "";
+    return `${when}  ${e.event}${data}`;
+  });
+  ctx.ui.notify(lines.join("\n"), "info");
 }
 
 async function doSearch(state: CommandState, query: string, ctx: any): Promise<void> {
@@ -127,18 +161,28 @@ function doReindex(state: CommandState, _rest: string, ctx: any): void {
     return;
   }
   state.store.clearAll();
-  ctx.ui.notify("pi-lcm-memory: cleared. Sweep will rebuild on next tick.", "info");
-  // Kick a tick now so the user sees activity.
-  state.indexer.tick().catch(() => {});
+  state.diagnostics?.log("reindex", { trigger: "command" });
+  ctx.ui.notify("pi-lcm-memory: cleared. Re-embedding now…", "info");
+  state.indexer.kick();
 }
 
-function doClear(state: CommandState, _rest: string, ctx: any): void {
+function doClear(state: CommandState, rest: string, ctx: any): void {
   if (!state.store) {
     ctx.ui.notify("pi-lcm-memory not initialized.", "warning");
     return;
   }
+  const confirmed = /(^|\s)(--yes|-y|--force)\b/.test(rest);
+  if (!confirmed) {
+    ctx.ui.notify(
+      "pi-lcm-memory: /memory clear is destructive. Re-run with --yes to drop all embeddings (sweep will then re-embed from pi-lcm).",
+      "warning",
+    );
+    return;
+  }
   state.store.clearAll();
+  state.diagnostics?.log("clear", {});
   ctx.ui.notify("pi-lcm-memory: all embeddings cleared.", "info");
+  state.indexer?.kick();
 }
 
 function doModel(state: CommandState, name: string, ctx: any): void {
@@ -153,10 +197,19 @@ function doModel(state: CommandState, name: string, ctx: any): void {
     ctx.ui.notify("pi-lcm-memory: cwd unknown; cannot persist setting.", "warning");
     return;
   }
-  const next: Partial<MemoryConfig> = { ...state.config, embeddingModel: name.trim() };
+  const newModel = name.trim();
+  if (newModel === state.config.embeddingModel) {
+    ctx.ui.notify(`pi-lcm-memory: already on ${newModel}.`, "info");
+    return;
+  }
+  const next: MemoryConfig = { ...state.config, embeddingModel: newModel };
   saveSettings(next, state.settingsScope, state.cwd);
+  state.config = next;
+  state.onConfigChange?.(next);
+  state.diagnostics?.log("model_change", { from: state.config.embeddingModel, to: newModel, scope: state.settingsScope });
   ctx.ui.notify(
-    `pi-lcm-memory: model set to ${name.trim()} (${state.settingsScope}). Restart Pi to apply; re-embed will run.`,
+    `pi-lcm-memory: model set to ${newModel} (${state.settingsScope}).\n` +
+      `Restart Pi to load it. Existing embeddings will be discarded and re-embedded on next session.`,
     "info",
   );
 }
