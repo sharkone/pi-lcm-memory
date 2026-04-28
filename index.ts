@@ -31,6 +31,7 @@ import { createLcmRecallTool } from "./src/tools/lcm-recall.js";
 import { createLcmSimilarTool } from "./src/tools/lcm-similar.js";
 import { MemorySettingsPanel } from "./src/settings-panel.js";
 import { Diagnostics } from "./src/diagnostics.js";
+import { trace, traceFile, isTracing } from "./src/trace.js";
 
 export default function (pi: ExtensionAPI) {
   let config: MemoryConfig = resolveConfig();
@@ -80,6 +81,7 @@ export default function (pi: ExtensionAPI) {
   async function initSession(ctx: any): Promise<void> {
     cwd = ctx.cwd ?? process.cwd();
     if (!cwd) return;
+    trace("init_session_start", { cwd, reason: ctx?.reason });
 
     config = resolveConfig({ cwd });
     if (!config.enabled) return;
@@ -148,14 +150,16 @@ export default function (pi: ExtensionAPI) {
         }
       },
       onLoaded: () => {
+        trace("embedder_loaded");
         const st = embedder?.state();
         diagnostics?.log("model_loaded", {
           model: config.embeddingModel,
           dims: embedder?.knownDims() ?? null,
           intraOpNumThreads: st?.intraOpNumThreads ?? null,
         });
+        const traceSuffix = isTracing() ? ` Trace: ${traceFile()}` : "";
         ctx.ui?.notify?.(
-          `[pi-lcm-memory] embedder ready (${config.embeddingModel}, ${st?.intraOpNumThreads ?? "?"} cores). Backfill starting.`,
+          `[pi-lcm-memory] embedder ready (${config.embeddingModel}, ${st?.intraOpNumThreads ?? "?"} cores). Backfill starting.${traceSuffix}`,
           "info",
         );
         updateStatus(store, indexer, embedder, ctx);
@@ -270,6 +274,7 @@ export default function (pi: ExtensionAPI) {
   // ── Hooks ───────────────────────────────────────────────────────────────────
 
   pi.on("session_start", async (event: any, ctx: any) => {
+    trace("session_start_hook", { reason: event?.reason });
     try {
       if (typeof event?.reason === "string" && event.reason !== "startup") {
         resetState();

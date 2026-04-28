@@ -25,12 +25,49 @@
  */
 
 import { parentPort, threadId } from "node:worker_threads";
-import { availableParallelism } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 if (!parentPort) {
   // Defensive: worker code must only run inside worker_threads.
   process.exit(1);
 }
+
+// ---------------------------------------------------------------------------
+// Side-channel tracer (mirrors src/trace.ts; kept inline because workers can't
+// import .ts files). Writes to the same file as the parent so timelines can
+// be merged. Enabled via PI_LCM_MEMORY_TRACE env var.
+// ---------------------------------------------------------------------------
+let __traceFd = null;
+(function initTrace() {
+  const env = process.env.PI_LCM_MEMORY_TRACE;
+  if (!env || env === "0" || env === "false") return;
+  // When the parent uses the pid-based default path, parent.pid is the pi
+  // process pid — but our worker pid is different. So use a fixed file name
+  // when env is "1"/"true", scoped to the parent's pid via PPID.
+  const ppid = process.ppid || process.pid;
+  const file =
+    env === "1" || env === "true"
+      ? path.join(tmpdir(), `pi-lcm-memory.${ppid}.trace.log`)
+      : env;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    __traceFd = fs.openSync(file, "a");
+  } catch {
+    __traceFd = null;
+  }
+})();
+function trace(event, data) {
+  if (__traceFd == null) return;
+  try {
+    const obj = { t: Date.now(), pid: process.pid, src: "worker", event, ...(data ?? {}) };
+    fs.writeSync(__traceFd, JSON.stringify(obj) + "\n");
+  } catch {
+    // ignore
+  }
+}
+trace("worker_boot", { threadId, ppid: process.ppid, node: process.version });
 
 let pipe = null;
 let modelName = "";
@@ -49,7 +86,10 @@ parentPort.postMessage({
 
 /** @param {object} opts */
 async function init(opts) {
+  trace("init_start", { model: opts?.model, quantize: opts?.quantize });
+  const tImport0 = Date.now();
   const tf = await import("@huggingface/transformers");
+  trace("init_imported", { ms: Date.now() - tImport0 });
 
   if (tf.env) {
     if (opts.cacheDir) tf.env.cacheDir = opts.cacheDir;
@@ -88,23 +128,31 @@ async function init(opts) {
     pipelineOpts.dtype = opts.quantize;
   }
 
+  trace("init_pipeline_start", { intraOpNumThreads });
+  const tPipe0 = Date.now();
   pipe = await tf.pipeline("feature-extraction", opts.model, pipelineOpts);
   modelName = opts.model;
+  trace("init_pipeline_end", { ms: Date.now() - tPipe0 });
 
   // Probe to discover dim if we don't already know.
   try {
+    trace("init_probe_start");
+    const tProbe0 = Date.now();
     const probe = await pipe(["__pi_lcm_memory_probe__"], {
       pooling: "mean",
       normalize: true,
     });
     const arrs = tensorToFloat32Arrays(probe, 1);
     pipeDims = arrs[0]?.length ?? null;
+    trace("init_probe_end", { ms: Date.now() - tProbe0, dims: pipeDims });
   } catch (e) {
     // Probe failure is non-fatal; the next embed call may still work and
     // report dims via its result.
     pipeDims = null;
+    trace("init_probe_error", { error: e instanceof Error ? e.message : String(e) });
   }
 
+  trace("init_done", { dims: pipeDims, intraOpNumThreads });
   parentPort.postMessage({
     type: "loaded",
     dims: pipeDims,
@@ -119,8 +167,15 @@ async function init(opts) {
  */
 async function embedTexts(texts) {
   if (!pipe) throw new Error("worker not initialized");
+  trace("embed_start", { count: texts.length });
+  const t0 = Date.now();
   const out = await pipe(texts, { pooling: "mean", normalize: true });
-  return tensorToFloat32Arrays(out, texts.length);
+  const inferMs = Date.now() - t0;
+  const t1 = Date.now();
+  const arrs = tensorToFloat32Arrays(out, texts.length);
+  const decodeMs = Date.now() - t1;
+  trace("embed_end", { count: texts.length, inferMs, decodeMs });
+  return arrs;
 }
 
 function serializeProgress(p) {
@@ -197,17 +252,25 @@ parentPort.on("message", async (msg) => {
     if (type === "init") {
       await init(msg.opts ?? {});
     } else if (type === "embed") {
+      trace("recv_embed", { id, count: (msg.texts ?? []).length });
       const arrs = await embedTexts(msg.texts ?? []);
       const buffers = arrs.map((v) => v.buffer);
+      trace("send_result", { id, count: arrs.length });
       parentPort.postMessage(
         { type: "result", id, dims: arrs[0]?.length ?? 0, buffers },
         buffers, // transfer (zero-copy)
       );
     } else if (type === "shutdown") {
+      trace("shutdown");
       // Allow current frame to flush, then exit cleanly.
       setImmediate(() => process.exit(0));
     }
   } catch (e) {
+    trace("worker_error", {
+      type,
+      id,
+      error: e instanceof Error ? e.message : String(e),
+    });
     parentPort.postMessage({
       type: "error",
       id,

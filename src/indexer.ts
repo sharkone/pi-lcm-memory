@@ -10,6 +10,7 @@
  */
 
 import { contentHash, extractIndexableText, makeSnippet, estimateTokens } from "./utils.js";
+import { trace } from "./trace.js";
 import type { Embedder } from "./embeddings/embedder.js";
 import type { MemoryStore, InsertArgs } from "./db/store.js";
 import type { PiLcmBridge, PiLcmMessage, PiLcmSummary } from "./bridge.js";
@@ -171,34 +172,44 @@ export class Indexer {
     this.busy = true;
     this.indexedThisCycle = 0;
     const t0 = Date.now();
+    trace("tick_start", { cycle: this.cycles + 1 });
     try {
       // Ensure embedder is ready before walking large backlogs (avoids per-row
       // warmup cost). Best-effort: if it fails, individual embeds still try.
+      trace("warmup_start");
       await this.deps.embedder.warmup().catch(() => {});
+      trace("warmup_end");
 
       if (this.deps.config.indexMessages) {
+        trace("sweep_messages_start");
         await this.processBatched(
           this.deps.bridge.messagesNotInMemoryIndex(SWEEP_BATCH * 4),
           (m: PiLcmMessage) => this.bridgeMessageToPending(m),
         );
+        trace("sweep_messages_end");
       }
       if (this.deps.config.indexSummaries) {
+        trace("sweep_summaries_start");
         await this.processBatched(
           this.deps.bridge.summariesNotInMemoryIndex(SWEEP_BATCH * 4),
           (s: PiLcmSummary) => this.bridgeSummaryToPending(s),
         );
+        trace("sweep_summaries_end");
       }
       this.cycles += 1;
       this.lastError = null;
+      const ms = Date.now() - t0;
       this.deps.log?.("sweep_done", {
         cycle: this.cycles,
         indexed: this.indexedThisCycle,
-        ms: Date.now() - t0,
+        ms,
       });
+      trace("tick_done", { cycle: this.cycles, indexed: this.indexedThisCycle, ms });
     } catch (e: unknown) {
       this.lastError = e instanceof Error ? e.message : String(e);
       this.deps.log?.("sweep_failed", { error: this.lastError });
       this.notify(`sweep failed: ${this.lastError}`, "warning");
+      trace("tick_failed", { error: this.lastError });
     } finally {
       this.busy = false;
     }
@@ -210,13 +221,27 @@ export class Indexer {
     toPending: (item: T) => PendingRow | null,
   ): Promise<void> {
     let batch: PendingRow[] = [];
+    let scanned = 0;
+    let batchIdx = 0;
+    trace("process_start");
+    const tIter0 = Date.now();
+    let tIterChunk = tIter0;
     for (const item of iter) {
       if (this.stopped) break;
+      scanned++;
+      // Trace the cost of pulling rows from pi-lcm tables itself — if the
+      // freeze is a slow LEFT JOIN, this is where it'll show up.
+      if (scanned % 64 === 0) {
+        const now = Date.now();
+        trace("iter_chunk", { scanned, ms: now - tIterChunk });
+        tIterChunk = now;
+      }
       const p = toPending(item);
       if (!p) continue;
       batch.push(p);
       if (batch.length >= SWEEP_BATCH) {
-        await this.embedAndStoreBatch(batch);
+        batchIdx++;
+        await this.embedAndStoreBatch(batch, batchIdx);
         batch = [];
         // Even with batched inserts, bursts of activity can starve the TUI.
         // setImmediate gives the event loop a chance to render keystrokes,
@@ -224,7 +249,15 @@ export class Indexer {
         await yieldToEventLoop();
       }
     }
-    if (batch.length > 0 && !this.stopped) await this.embedAndStoreBatch(batch);
+    if (batch.length > 0 && !this.stopped) {
+      batchIdx++;
+      await this.embedAndStoreBatch(batch, batchIdx);
+    }
+    trace("process_end", {
+      scanned,
+      batches: batchIdx,
+      ms: Date.now() - tIter0,
+    });
   }
 
   private bridgeMessageToPending(m: PiLcmMessage): PendingRow | null {
@@ -321,23 +354,32 @@ export class Indexer {
   }
 
   /** Embed an entire batch of pending rows in a single inference call. */
-  private async embedAndStoreBatch(batch: PendingRow[]): Promise<void> {
+  private async embedAndStoreBatch(batch: PendingRow[], batchIdx = 0): Promise<void> {
     if (batch.length === 0) return;
+    trace("batch_start", { batchIdx, size: batch.length });
     if (!this.deps.embedder.knownDims()) await this.deps.embedder.warmup();
     const dims = this.deps.embedder.knownDims() ?? 0;
     if (dims === 0) throw new Error("embedder has no dim after warmup");
 
     // Bulk-skip rows already indexed (raced with hook path or another sweep).
     // One IN() query instead of N hasContentHash calls.
+    const tDedupe0 = Date.now();
     const present = this.deps.store.whichHashesPresent(
       batch.map((p) => p.args.content_hash),
     );
     const fresh = batch.filter((p) => !present.has(p.args.content_hash));
-    if (fresh.length === 0) return;
+    const dedupeMs = Date.now() - tDedupe0;
+    trace("batch_dedupe", { batchIdx, in: batch.length, fresh: fresh.length, ms: dedupeMs });
+    if (fresh.length === 0) {
+      trace("batch_skip", { batchIdx, reason: "all_present" });
+      return;
+    }
 
+    trace("batch_embed_start", { batchIdx, size: fresh.length });
     const tEmbed0 = Date.now();
     const vectors = await this.deps.embedder.embed(fresh.map((p) => p.text));
     const tEmbedMs = Date.now() - tEmbed0;
+    trace("batch_embed_end", { batchIdx, size: fresh.length, ms: tEmbedMs });
 
     // Build the InsertArgs[] (with embedding + model_dims attached) and
     // hand them to the store as a single transaction.
@@ -349,9 +391,11 @@ export class Indexer {
       items.push({ ...p.args, embedding: v, model_dims: dims });
     }
 
+    trace("batch_insert_start", { batchIdx, size: items.length });
     const tInsert0 = Date.now();
     this.deps.store.insertBatch(items);
     const tInsertMs = Date.now() - tInsert0;
+    trace("batch_insert_end", { batchIdx, size: items.length, ms: tInsertMs });
     this.indexedThisCycle += items.length;
     this.indexedTotal += items.length;
 
@@ -361,8 +405,16 @@ export class Indexer {
         size: items.length,
         embedMs: tEmbedMs,
         insertMs: tInsertMs,
+        dedupeMs,
       });
     }
+    trace("batch_done", {
+      batchIdx,
+      size: items.length,
+      embedMs: tEmbedMs,
+      insertMs: tInsertMs,
+      dedupeMs,
+    });
   }
 
   private notify(message: string, level: "info" | "warning" | "error" = "info"): void {

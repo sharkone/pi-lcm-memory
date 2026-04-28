@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { EmbeddingDtype } from "../config.js";
 import { lookupModel } from "./model-registry.js";
+import { trace } from "../trace.js";
 
 export interface EmbedderOptions {
   model: string;
@@ -146,8 +147,19 @@ export class Embedder {
       throw new Error(`embedder unavailable: ${this.error ?? "unknown error"}`);
     }
     const id = ++this.nextId;
+    const startedAt = Date.now();
+    trace("embed_post", { id, count: arr.length });
     return new Promise<Float32Array[]>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, {
+        resolve: (v) => {
+          trace("embed_resolve", { id, totalMs: Date.now() - startedAt });
+          resolve(v);
+        },
+        reject: (e) => {
+          trace("embed_reject", { id, totalMs: Date.now() - startedAt });
+          reject(e);
+        },
+      });
       this.worker!.postMessage({ type: "embed", id, texts: arr });
     });
   }
