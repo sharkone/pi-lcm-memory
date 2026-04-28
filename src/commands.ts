@@ -53,7 +53,6 @@ export async function handleMemoryCommand(
     case "settings":
       return openSettings(state, ctx);
     case "events":
-    case "log":
       return printEvents(state, ctx);
     case "worker":
       return printWorker(state, ctx);

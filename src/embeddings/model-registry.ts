@@ -13,7 +13,7 @@ export interface ModelInfo {
   defaultNormalize: boolean;
 }
 
-export const REGISTRY: ReadonlyArray<ModelInfo> = [
+const REGISTRY: ReadonlyArray<ModelInfo> = [
   {
     name: "Xenova/bge-small-en-v1.5",
     repo: "Xenova/bge-small-en-v1.5",

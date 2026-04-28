@@ -145,7 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the JS thread is stuck in a sync C call, but `fs.writeSync` snapshots
   every step right before the freeze. This is the tool that pinpointed
   the infinite-loop bug above. Notable trace events: `tick_start`,
-  `warmup_start/end`, `process_start/end`, `iter_chunk`, `batch_start`,
+  `warmup_start/end`, `process_start/end`, `batch_start`,
   `batch_dedupe`, `batch_embed_start/end`, `batch_insert_start/end`,
   `batch_done`, `safety_yield`, `embed_post`, `embed_resolve`,
   `worker_boot`, `init_pipeline_start/end`.

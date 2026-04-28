@@ -228,15 +228,9 @@ export class Indexer {
     let lastYield = 0;
     trace("process_start");
     const tIter0 = Date.now();
-    let tIterChunk = tIter0;
     for (const item of iter) {
       if (this.stopped) break;
       scanned++;
-      if (scanned % 64 === 0) {
-        const now = Date.now();
-        trace("iter_chunk", { scanned, ms: now - tIterChunk });
-        tIterChunk = now;
-      }
       // SAFETY NET: yield to the event loop every 1024 iterated items even
       // if no batch has fired. Protects the TUI against any future bug that
       // causes toPending() to return null for a long run of rows. Without
@@ -455,8 +449,6 @@ export class Indexer {
     }
   }
 }
-
-export const _testing = { SWEEP_BATCH, SWEEP_BACKOFF_MIN_MS, SWEEP_BACKOFF_MAX_MS };
 
 function isToolIORole(role: string): boolean {
   return role === "toolResult" || role === "bashExecution";

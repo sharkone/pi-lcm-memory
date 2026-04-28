@@ -17,7 +17,7 @@ import { hashCwd } from "../utils.js";
 let db: Database.Database | null = null;
 let currentCwd: string | null = null;
 
-export function getDbPath(dbDir: string, cwd: string): string {
+function getDbPath(dbDir: string, cwd: string): string {
   return join(dbDir, `${hashCwd(cwd)}.db`);
 }
 
@@ -61,10 +61,4 @@ export function closeDb(): void {
   currentCwd = null;
 }
 
-export function getOpenDb(): Database.Database | null {
-  return db;
-}
 
-export function getOpenCwd(): string | null {
-  return currentCwd;
-}
