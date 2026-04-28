@@ -12,9 +12,9 @@ import type { AutoRecallMode } from "./config.js";
 import { estimateTokens } from "./utils.js";
 
 export const DEFAULT_TRIGGER = new RegExp(
-  "\\b(remember|recall|earlier|previously|before|like\\s+last\\s+time|" +
-    "the\\s+(same|previous|prior)\\s+(one|approach|setup|fix|bug|issue)|" +
-    "we\\s+(had|have|already)\\s+(discussed|talked|mentioned|tried|done))\\b",
+  "\\b(?:remember|recall|earlier|previously|before|like\\s+last\\s+time|" +
+    "the\\s+(?:same|previous|prior)\\s+(?:one|approach|setup|fix|bug|issue)|" +
+    "we\\s+(?:(?:had|have)(?:\\s+already)?|already)\\s+(?:discussed|talked|mentioned|tried|done))\\b",
   "i",
 );
 

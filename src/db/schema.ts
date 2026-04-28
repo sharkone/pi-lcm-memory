@@ -13,7 +13,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { isVecLoaded } from "./vec.js";
+import { isVecLoadedFor } from "./vec.js";
 
 const SCHEMA_VERSION = 1;
 
@@ -96,7 +96,7 @@ function applyV1(db: Database.Database): void {
  * loaded, skip silently — retrieval will fall back to FTS5-only.
  */
 function reconcileVecDim(db: Database.Database, opts: MigrationOptions): void {
-  if (!isVecLoaded()) return;
+  if (!isVecLoadedFor(db)) return;
 
   const recordedDim = readMeta(db, "embedding_dim");
   const recordedModel = readMeta(db, "embedding_model");

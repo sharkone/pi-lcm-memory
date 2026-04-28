@@ -10,9 +10,14 @@
 
 import type Database from "better-sqlite3";
 
-let attempted = false;
-let loaded = false;
-let loadError: string | null = null;
+/**
+ * sqlite-vec loads its extension into a SPECIFIC db connection. We must
+ * track which connections have it loaded — module-level singletons would
+ * lie when callers open multiple DBs (tests, migrations, multi-cwd hosts).
+ */
+const loadedDbs = new WeakSet<Database.Database>();
+let anyLoaded = false;
+let lastError: string | null = null;
 
 export interface VecState {
   loaded: boolean;
@@ -20,8 +25,7 @@ export interface VecState {
 }
 
 export async function ensureVecLoaded(db: Database.Database): Promise<VecState> {
-  if (attempted) return { loaded, error: loadError };
-  attempted = true;
+  if (loadedDbs.has(db)) return { loaded: true, error: null };
 
   try {
     const mod: any = await import("sqlite-vec");
@@ -32,23 +36,33 @@ export async function ensureVecLoaded(db: Database.Database): Promise<VecState> 
     } else {
       throw new Error("sqlite-vec module does not expose a `load(db)` function");
     }
-    // Sanity check — if vec_version() is callable we're good.
     const row = db.prepare("SELECT vec_version() AS v").get() as { v?: string } | undefined;
     if (!row?.v) throw new Error("sqlite-vec loaded but vec_version() is unavailable");
-    loaded = true;
+    loadedDbs.add(db);
+    anyLoaded = true;
+    lastError = null;
+    return { loaded: true, error: null };
   } catch (e: unknown) {
-    loaded = false;
-    loadError = e instanceof Error ? e.message : String(e);
+    lastError = e instanceof Error ? e.message : String(e);
+    return { loaded: false, error: lastError };
   }
-  return { loaded, error: loadError };
 }
 
+export function isVecLoadedFor(db: Database.Database): boolean {
+  return loadedDbs.has(db);
+}
+
+/**
+ * Process-wide "any vec available" flag. Useful for general capability
+ * checks where the caller doesn't have a db reference handy. Per-db
+ * checks should use isVecLoadedFor().
+ */
 export function isVecLoaded(): boolean {
-  return loaded;
+  return anyLoaded;
 }
 
 export function vecError(): string | null {
-  return loadError;
+  return lastError;
 }
 
 /** Encode a Float32Array to the BLOB shape sqlite-vec expects on insert. */

@@ -4,7 +4,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { encodeVector, isVecLoaded } from "./vec.js";
+import { encodeVector, isVecLoadedFor } from "./vec.js";
 
 export interface IndexRow {
   vec_rowid: number;
@@ -65,7 +65,7 @@ export class MemoryStore {
    * vec_rowid and does nothing. Returns null if vec is unavailable.
    */
   insert(args: InsertArgs): number | null {
-    if (!isVecLoaded()) return null;
+    if (!isVecLoadedFor(this.db)) return null;
     if (args.embedding.length !== args.model_dims) {
       throw new Error(
         `embedding length ${args.embedding.length} does not match model_dims ${args.model_dims}`,
@@ -136,7 +136,7 @@ export class MemoryStore {
 
   /** kNN search over memory_vec; returns vec_rowids ranked by distance. */
   knn(query: Float32Array, k: number): { vec_rowid: number; distance: number }[] {
-    if (!isVecLoaded()) return [];
+    if (!isVecLoadedFor(this.db)) return [];
     const rows = this.db
       .prepare(
         `SELECT rowid AS vec_rowid, distance
@@ -157,8 +157,9 @@ export class MemoryStore {
     const byMessage = byKindRows.find((r) => r.source_kind === "message")?.n ?? 0;
     const bySummary = byKindRows.find((r) => r.source_kind === "summary")?.n ?? 0;
 
+    const vecAvailable = isVecLoadedFor(this.db);
     let vecRows = 0;
-    if (isVecLoaded()) {
+    if (vecAvailable) {
       try {
         const r = this.db.prepare("SELECT COUNT(*) AS n FROM memory_vec").get() as { n: number };
         vecRows = r.n;
@@ -184,12 +185,12 @@ export class MemoryStore {
       modelName,
       modelDims,
       dbSizeBytes: sizeRow.bytes,
-      vecAvailable: isVecLoaded(),
+      vecAvailable,
     };
   }
 
   clearAll(): void {
-    if (!isVecLoaded()) {
+    if (!isVecLoadedFor(this.db)) {
       this.db.prepare("DELETE FROM memory_index").run();
       return;
     }
