@@ -163,10 +163,12 @@ the quality lift with numbers.
       nDCG@10, recall@5/@10, precision@5 over an eval set. Synthetic
       eval generated from `BENCH_TOPICS` if no `bench/eval/eval.json`
       is provided. Run via `npm run bench:quality`.
-- [ ] **End-to-end test harness** (`test/e2e/`) — real worker, real
-      DB, real ONNX, faithful pi `ExtensionAPI` stub. Catches the
-      class of integration bugs unit tests miss (e.g. settings panel
-      API shape).
+- [x] **End-to-end test harness** (`test/e2e/`) — `makeFakePi()`
+      faithful `ExtensionAPI` stub + tmp project + pre-seeded
+      pi-lcm DB. Tests run real worker, real DB, real ONNX. Opt-in
+      via `PI_LCM_MEMORY_LIVE_TEST=1`. Coverage: backfill, lcm_recall,
+      lcm_similar, /memory commands, settings panel factory contract,
+      message_end hook indexing. 7 tests passing in ~500 ms.
 - [ ] **Capture baseline** — commit `bench/results/{perf,quality}.<sha>.json`
       so the reranker delta is a diff, not a vibe.
 - [ ] **Cross-encoder reranker** (`Xenova/ms-marco-MiniLM-L-6-v2`) as
