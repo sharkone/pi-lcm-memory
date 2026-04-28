@@ -143,22 +143,52 @@ have everything re-embedded in the background, with a footer status visible. ✅
       download notifications + worker hello message** for visibility
       during model downloads.
 
-### Quality / functionality stretches (planned, not yet shipped)
+---
 
-- [ ] **Cross-encoder re-ranker** (`Xenova/ms-marco-MiniLM-L-6-v2`) on
-      top-N hybrid results behind a config flag. Biggest *quality* win
-      for retrieval; especially useful for auto-recall where the top hit
-      must be on-topic. Same worker, second pipeline, opt-in.
-- [ ] **Memory cards** (manually saved snippets via `/memory save` and a
-      tool). Mirrors the prior local attempt; useful for "always remember
-      X about this project" patterns.
-- [ ] **Cross-project / workspace-wide recall** (multi-DB query layer).
-      Useful when topics recur across projects.
+## Phase 6 — Quality + measurement (next session)
+
+Full plan in [NEXT.md](./NEXT.md). Order matters: cleanup, then
+measurement infrastructure, then the cross-encoder, so we can prove
+the quality lift with numbers.
+
+- [ ] **Housekeeping pass** — drop `_testing` export from indexer,
+      remove or rate-limit `iter_chunk` trace, fold `log` alias into
+      `events`, audit unused exports, brief tracer doc in README.
+- [ ] **Performance benchmarks** (`bench/perf.ts`) — embed throughput,
+      hook/sweep latencies (p50/p99), recall latency, DB size growth,
+      cold worker warmup. Outputs JSON + markdown summary.
+- [ ] **Recall quality benchmarks** (`bench/quality.ts`) — MRR,
+      nDCG@10, recall@10, precision@5 over an eval set generated from
+      a real conversation DB. Optional: BEIR/MS-MARCO subset for
+      cross-checks.
+- [ ] **End-to-end test harness** (`test/e2e/`) — real worker, real
+      DB, real ONNX, faithful pi `ExtensionAPI` stub. Catches the
+      class of integration bugs unit tests miss (e.g. settings panel
+      API shape).
+- [ ] **Capture baseline** — commit `bench/results/{perf,quality}.<sha>.json`
+      so the reranker delta is a diff, not a vibe.
+- [ ] **Cross-encoder reranker** (`Xenova/ms-marco-MiniLM-L-6-v2`) as
+      a second pipeline in the existing worker. Opt-in via
+      `rerank: boolean` config; default off. Lazy-loaded — no cost
+      when off.
+- [ ] **Re-run benchmarks**, document delta in CHANGELOG with concrete
+      numbers. Reranker only ships if quality goes up.
+
+---
+
+## Future research (not scheduled)
+
+Kept for context; pull into a numbered phase only when actively useful.
+
 - [ ] **Code / file content indexing** (separate `code_vec` table;
-      AST-aware chunking).
+      AST-aware chunking). User has flagged this as **interesting for
+      future discussion**. Design notes in NEXT.md § "Future research".
+- [ ] **Memory cards** (manually saved snippets via `/memory save` and a
+      tool). Mirrors a prior local attempt.
+- [ ] **Cross-project / workspace-wide recall** (multi-DB query layer).
 - [ ] **MCP wrapper** exposing recall to Claude Code (Q3 deferred path).
 - [ ] **Eviction / retention policy** (e.g., archive after N days, keep
-      summaries). Important once a heavy user accumulates 100k+ rows.
+      summaries). Matters once a heavy user accumulates 100k+ rows.
 - [ ] **Edit / redact memory** (with audit log).
 - [ ] **`PI_LCM_MEMORY_TRACE` toggleable from `/memory trace on|off`** so
       no relaunch is needed to enable the tracer.

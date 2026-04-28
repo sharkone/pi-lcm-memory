@@ -7,8 +7,23 @@
 
 ## Status
 
-Phase 4 (operator polish). Phases 1–3 shipped. See [PLAN.md](./PLAN.md) and
-[ROADMAP.md](./ROADMAP.md).
+Phases 1–5 shipped — stable in interactive use. Phase 6 (benchmarking
+infrastructure + cross-encoder reranker) is queued; see
+[NEXT.md](./NEXT.md) for the next-session plan,
+[ROADMAP.md](./ROADMAP.md) for the long-term view, and
+[PLAN.md](./PLAN.md) for design rationale.
+
+## Debugging
+
+Set `PI_LCM_MEMORY_TRACE=1` before launching pi to write a side-channel
+trace log to `/tmp/pi-lcm-memory.<pid>.trace.log` (or pass an explicit
+path: `PI_LCM_MEMORY_TRACE=/path/to/log`). Both the main thread and
+the embedder worker append to the same file with `pid`/`src` markers,
+so it survives main-thread freezes — useful when the TUI hangs and
+the in-DB diagnostics ring can't be written.
+
+`/memory worker` dumps current embedder + worker state for live
+diagnostics.
 
 ## Quick start
 
