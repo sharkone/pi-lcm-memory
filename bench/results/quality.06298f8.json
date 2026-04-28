@@ -1,8 +1,8 @@
 {
   "meta": {
-    "git_sha": "e468418",
-    "git_dirty": false,
-    "timestamp": "2026-04-28T03:14:01.208Z",
+    "git_sha": "06298f8",
+    "git_dirty": true,
+    "timestamp": "2026-04-28T03:22:04.936Z",
     "quick": false,
     "model": "Xenova/bge-small-en-v1.5",
     "quantize": "q8",
@@ -10,6 +10,10 @@
     "cpu_model": "Apple M5",
     "cpu_cores": 10,
     "total_memory_gb": 16,
+    "rerank": false,
+    "rerank_model": null,
+    "rerank_quantize": null,
+    "rerank_pool": null,
     "eval_source": "synthetic",
     "eval_path": null,
     "n_messages": 230,

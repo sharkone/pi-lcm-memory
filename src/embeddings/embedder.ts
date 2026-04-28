@@ -46,7 +46,20 @@ export interface EmbedderEventListener {
   onProgress?: (e: { file: string; loaded: number; total: number | null }) => void;
   onWorkerHello?: (e: { threadId: number; pid: number; nodeVersion: string; cores: number }) => void;
   onLoaded?: () => void;
+  onRerankerLoaded?: (e: { model: string }) => void;
   onError?: (msg: string) => void;
+}
+
+export interface RerankerOptions {
+  model: string;
+  quantize: EmbeddingDtype;
+}
+
+export interface RerankerState {
+  model: string;
+  ready: boolean;
+  loading: boolean;
+  error: string | null;
 }
 
 interface PendingEmbed {
@@ -54,13 +67,19 @@ interface PendingEmbed {
   reject: (e: Error) => void;
 }
 
+interface PendingRerank {
+  resolve: (scores: number[]) => void;
+  reject: (e: Error) => void;
+}
+
 interface WorkerMessage {
-  type: "hello" | "progress" | "loaded" | "result" | "error";
+  type: "hello" | "progress" | "loaded" | "result" | "reranker_loaded" | "rerank_result" | "error";
   id?: number;
   payload?: unknown;
   dims?: number;
   intraOpNumThreads?: number;
   buffers?: ArrayBuffer[];
+  scores?: number[];
   message?: string;
   stack?: string;
   model?: string;
@@ -87,6 +106,14 @@ export class Embedder {
 
   private nextId = 0;
   private pending = new Map<number, PendingEmbed>();
+  private pendingRerank = new Map<number, PendingRerank>();
+  private rerankerOpts: RerankerOptions | null = null;
+  private rerankerLoaded = false;
+  private rerankerLoading = false;
+  private rerankerError: string | null = null;
+  private rerankerLoadPromise: Promise<void> | null = null;
+  private rerankerInitResolve: (() => void) | null = null;
+  private rerankerInitReject: ((e: Error) => void) | null = null;
   private initResolve: (() => void) | null = null;
   private initReject: ((e: Error) => void) | null = null;
   private warmupTimer: NodeJS.Timeout | null = null;
@@ -164,6 +191,51 @@ export class Embedder {
     });
   }
 
+  /**
+   * Lazily warm up the reranker pipeline. No-op if already loaded with the
+   * same options.
+   */
+  async warmupReranker(opts: RerankerOptions): Promise<void> {
+    if (
+      this.rerankerLoaded &&
+      this.rerankerOpts &&
+      this.rerankerOpts.model === opts.model &&
+      this.rerankerOpts.quantize === opts.quantize
+    ) {
+      return;
+    }
+    if (this.rerankerLoadPromise) return this.rerankerLoadPromise;
+    this.rerankerOpts = opts;
+    this.rerankerLoadPromise = this.spawnAndLoadReranker();
+    await this.rerankerLoadPromise;
+  }
+
+  /** Score (query, doc) pairs. Caller must have warmed up the reranker. */
+  async rerank(query: string, docs: string[]): Promise<number[]> {
+    if (docs.length === 0) return [];
+    if (!this.rerankerLoaded) {
+      throw new Error("reranker not warmed up; call warmupReranker() first");
+    }
+    if (!this.worker) {
+      throw new Error(`embedder unavailable: ${this.error ?? "unknown error"}`);
+    }
+    const id = ++this.nextId;
+    return new Promise<number[]>((resolve, reject) => {
+      this.pendingRerank.set(id, { resolve, reject });
+      this.worker!.postMessage({ type: "rerank", id, query, docs });
+    });
+  }
+
+  rerankerState(): RerankerState | null {
+    if (!this.rerankerOpts) return null;
+    return {
+      model: this.rerankerOpts.model,
+      ready: this.rerankerLoaded,
+      loading: this.rerankerLoading,
+      error: this.rerankerError,
+    };
+  }
+
   /** Tear down the worker. Rejects any pending requests. */
   terminate(): void {
     for (const p of this.pending.values()) {
@@ -174,6 +246,26 @@ export class Embedder {
       }
     }
     this.pending.clear();
+    for (const p of this.pendingRerank.values()) {
+      try {
+        p.reject(new Error("embedder terminated"));
+      } catch {
+        // ignore
+      }
+    }
+    this.pendingRerank.clear();
+    if (this.rerankerInitReject) {
+      try {
+        this.rerankerInitReject(new Error("embedder terminated"));
+      } catch {
+        // ignore
+      }
+      this.rerankerInitResolve = null;
+      this.rerankerInitReject = null;
+    }
+    this.rerankerLoaded = false;
+    this.rerankerLoading = false;
+    this.rerankerLoadPromise = null;
     if (this.initReject) {
       try {
         this.initReject(new Error("embedder terminated"));
@@ -309,6 +401,26 @@ export class Embedder {
           p.resolve(vectors);
           break;
         }
+        case "reranker_loaded":
+          this.rerankerLoaded = true;
+          this.rerankerLoading = false;
+          this.rerankerError = null;
+          this.rerankerInitResolve?.();
+          this.rerankerInitResolve = null;
+          this.rerankerInitReject = null;
+          this.listener?.onRerankerLoaded?.({
+            model: typeof msg.model === "string" ? msg.model : this.rerankerOpts?.model ?? "",
+          });
+          break;
+        case "rerank_result": {
+          if (typeof msg.id !== "number") return;
+          const p = this.pendingRerank.get(msg.id);
+          if (!p) return;
+          this.pendingRerank.delete(msg.id);
+          const scores = Array.isArray(msg.scores) ? msg.scores.map(Number) : [];
+          p.resolve(scores);
+          break;
+        }
         case "error": {
           const text = msg.message ?? "worker error";
           if (typeof msg.id === "number") {
@@ -318,13 +430,30 @@ export class Embedder {
               p.reject(new Error(text));
               return;
             }
+            const r = this.pendingRerank.get(msg.id);
+            if (r) {
+              this.pendingRerank.delete(msg.id);
+              r.reject(new Error(text));
+              return;
+            }
           }
-          // Init-time or unattributed error.
+          // Init-time or unattributed error: reject both init promises
+          // (whichever is active).
           this.error = text;
           this.listener?.onError?.(text);
-          this.initReject?.(new Error(text));
-          this.initResolve = null;
-          this.initReject = null;
+          if (this.rerankerInitReject) {
+            this.rerankerError = text;
+            this.rerankerLoading = false;
+            this.rerankerLoadPromise = null;
+            this.rerankerInitReject(new Error(text));
+            this.rerankerInitResolve = null;
+            this.rerankerInitReject = null;
+          }
+          if (this.initReject) {
+            this.initReject(new Error(text));
+            this.initResolve = null;
+            this.initReject = null;
+          }
           break;
         }
       }
@@ -364,6 +493,37 @@ export class Embedder {
       this.worker = null;
       this.loadPromise = null;
     });
+  }
+
+  private async spawnAndLoadReranker(): Promise<void> {
+    // The reranker shares the worker; we must have a live worker first.
+    await this.warmup();
+    if (!this.worker || !this.rerankerOpts) {
+      throw new Error("reranker init: worker unavailable");
+    }
+    this.rerankerLoading = true;
+    this.rerankerError = null;
+    try {
+      const initialized = new Promise<void>((resolve, reject) => {
+        this.rerankerInitResolve = resolve;
+        this.rerankerInitReject = reject;
+      });
+      this.worker.postMessage({
+        type: "init_reranker",
+        opts: {
+          model: this.rerankerOpts.model,
+          quantize: this.rerankerOpts.quantize,
+        },
+      });
+      await initialized;
+    } catch (e: unknown) {
+      const text = e instanceof Error ? e.message : String(e);
+      this.rerankerError = text;
+      this.rerankerLoadPromise = null;
+      throw e;
+    } finally {
+      this.rerankerLoading = false;
+    }
   }
 
   private handleProgress(payload: unknown): void {

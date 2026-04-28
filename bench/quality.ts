@@ -40,6 +40,10 @@ import { aggregate, type QueryEval } from "./lib/metrics.js";
 const QUICK = process.env.PI_LCM_MEMORY_BENCH_QUICK === "1";
 const MODEL = process.env.PI_LCM_MEMORY_BENCH_MODEL ?? "Xenova/bge-small-en-v1.5";
 const QUANTIZE = process.env.PI_LCM_MEMORY_BENCH_QUANTIZE ?? "q8";
+const RERANK = process.env.PI_LCM_MEMORY_BENCH_RERANK === "1";
+const RERANK_MODEL = process.env.PI_LCM_MEMORY_BENCH_RERANK_MODEL ?? "Xenova/ms-marco-MiniLM-L-6-v2";
+const RERANK_QUANTIZE = process.env.PI_LCM_MEMORY_BENCH_RERANK_QUANTIZE ?? "q8";
+const RERANK_POOL = parseInt(process.env.PI_LCM_MEMORY_BENCH_RERANK_POOL ?? "30", 10);
 
 const DEFAULT_EVAL_PATH = join(process.cwd(), "bench", "eval", "eval.json");
 const EVAL_PATH = process.env.PI_LCM_MEMORY_BENCH_EVAL ?? DEFAULT_EVAL_PATH;
@@ -84,6 +88,10 @@ interface Report {
     quick: boolean;
     model: string;
     quantize: string;
+    rerank: boolean;
+    rerank_model: string | null;
+    rerank_quantize: string | null;
+    rerank_pool: number | null;
     node_version: string;
     cpu_model: string;
     cpu_cores: number;
@@ -111,6 +119,16 @@ async function main() {
     cacheDir: null,
   });
   await embedder.warmup();
+
+  if (RERANK) {
+    console.log(`  warming reranker (${RERANK_MODEL}, ${RERANK_QUANTIZE}, pool=${RERANK_POOL})...`);
+    const tRerank0 = Date.now();
+    await embedder.warmupReranker({
+      model: RERANK_MODEL,
+      quantize: RERANK_QUANTIZE as never,
+    });
+    console.log(`  reranker ready in ${Date.now() - tRerank0}ms`);
+  }
   const dims = embedder.knownDims();
   if (!dims) throw new Error("embedder has no known dims after warmup");
 
@@ -173,6 +191,8 @@ async function main() {
     embedder: embedder as never,
     bridge,
     rrfK: DEFAULTS.rrfK,
+    rerankEnabled: () => RERANK,
+    rerankPoolSize: () => RERANK_POOL,
   });
 
   // Run each query.
@@ -211,6 +231,10 @@ async function main() {
   const report: Report = {
     meta: {
       ...collectMeta(),
+      rerank: RERANK,
+      rerank_model: RERANK ? RERANK_MODEL : null,
+      rerank_quantize: RERANK ? RERANK_QUANTIZE : null,
+      rerank_pool: RERANK ? RERANK_POOL : null,
       eval_source: evalSet.source,
       eval_path: evalSet.source === "file" ? EVAL_PATH : null,
       n_messages: evalSet.messages.length,
@@ -325,8 +349,9 @@ function collectMeta() {
 function writeOutputs(report: Report): void {
   const dir = join(process.cwd(), "bench", "results");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const suffix = report.meta.quick ? ".quick" : "";
-  const jsonPath = join(dir, `quality.${report.meta.git_sha}${suffix}.json`);
+  const quickSuffix = report.meta.quick ? ".quick" : "";
+  const rerankSuffix = report.meta.rerank ? ".rerank" : "";
+  const jsonPath = join(dir, `quality.${report.meta.git_sha}${quickSuffix}${rerankSuffix}.json`);
   writeFileSync(jsonPath, JSON.stringify(report, null, 2));
   writeFileSync(join(dir, "quality.latest.md"), renderMarkdown(report));
 }
@@ -338,6 +363,11 @@ function renderMarkdown(report: Report): string {
   lines.push(`- git: \`${report.meta.git_sha}\`${report.meta.git_dirty ? " (dirty)" : ""}`);
   lines.push(`- timestamp: ${report.meta.timestamp}`);
   lines.push(`- model: \`${report.meta.model}\` (${report.meta.quantize})`);
+  if (report.meta.rerank) {
+    lines.push(`- rerank: \`${report.meta.rerank_model}\` (${report.meta.rerank_quantize}, pool=${report.meta.rerank_pool})`);
+  } else {
+    lines.push(`- rerank: off`);
+  }
   lines.push(`- eval source: ${report.meta.eval_source}${report.meta.eval_path ? ` (\`${report.meta.eval_path}\`)` : ""}`);
   lines.push(`- corpus: ${report.meta.n_messages} messages + ${report.meta.n_summaries} summaries`);
   lines.push(`- queries: ${report.meta.n_queries}`);

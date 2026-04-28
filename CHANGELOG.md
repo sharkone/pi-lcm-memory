@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 6 — cross-encoder reranker)
+
+- **Cross-encoder reranker** (opt-in). Default model
+  `Xenova/ms-marco-MiniLM-L-6-v2` runs in the existing embedder worker as
+  a second pipeline (lazy-loaded; zero cost when off). When enabled, the
+  hybrid recall stage fetches a wider candidate pool (default 30) and the
+  cross-encoder reorders the top-K. Falls through to hybrid order on any
+  reranker error so a broken reranker can never silently hurt recall.
+  Wire-protocol additions to the worker: `init_reranker`, `rerank`,
+  `reranker_loaded`, `rerank_result`. Embedder API additions:
+  `warmupReranker(opts)`, `rerank(query, docs)`, `rerankerState()`,
+  `EmbedderEventListener.onRerankerLoaded`. Retriever API additions:
+  `RecallParams.rerank`, `RecallHit.rerank_score`,
+  `RetrieverDeps.rerankEnabled`, `RetrieverDeps.rerankPoolSize`. Config
+  additions: `rerank: boolean` (default `false`), `rerankModel: string`
+  (default `Xenova/ms-marco-MiniLM-L-6-v2`), `rerankQuantize:
+  EmbeddingDtype` (default `q8`), `rerankPoolSize: number` (default 30,
+  range 1–200). Env overrides: `PI_LCM_MEMORY_RERANK={0|1}`,
+  `PI_LCM_MEMORY_RERANK_MODEL`, `PI_LCM_MEMORY_RERANK_QUANTIZE`,
+  `PI_LCM_MEMORY_RERANK_POOL`.
+
+- **`/memory rerank on|off`** shortcut command. Reads current state with
+  no args; toggles + persists at the active settings scope when given
+  `on`/`off`. Settings panel grew two rows (`Rerank` boolean,
+  `Rerank pool` number).
+
+- **Quality results.** On the synthetic eval (230 msgs, 15 queries,
+  k=20) at sha `06298f8`:
+
+      | metric      | hybrid | + rerank | Δ          |
+      | ----------- | -----: | -------: | ----------- |
+      | MRR         |  0.364 |    1.000 | +0.636 (+175%) |
+      | Recall@5    |  0.113 |    0.500 | +0.387 (+342%) |
+      | Recall@10   |  0.480 |    0.993 | +0.513 (+107%) |
+      | Precision@5 |  0.227 |    1.000 | +0.773 (+340%) |
+      | nDCG@10     |  0.391 |    0.996 | +0.605 (+155%) |
+
+  Live-test throughput on M5 × 8 worker threads, q8 cross-encoder:
+  30 (query, doc) pairs in ~15 ms (≈2000 pairs/sec). Reranker init time
+  is ~30 ms warm + ~3.5 MB model download cold.
+
+- **Bench harness extended.** `bench/quality.ts` now runs with rerank
+  on/off via `PI_LCM_MEMORY_BENCH_RERANK=1`. JSON output filenames
+  carry a `.rerank` suffix when applicable. Markdown summary shows
+  reranker model + pool size in the header.
+
+- **Tests.** `test/retrieval.rerank.test.ts` adds 5 unit tests with a
+  `FakeRerankerEmbedder` that exercise: rerank-off path, rerank-on
+  reorders correctly, `params.rerank` overrides config, fall-through
+  on thrown error, fall-through on score-count mismatch.
+  `test/worker.live.test.ts` adds one live test (gated on
+  `PI_LCM_MEMORY_LIVE_TEST=1`) that loads the cross-encoder, scores
+  the canonical Berlin/NYC pair, and runs a 30-pair throughput probe.
+  Total tests now: 87 passing (was 82), 11 skipped (was 10).
+
+### Added (Phase 6 — housekeeping + bench infra)
+
+- **Performance benchmarks** (`bench/perf.ts`, `npm run bench:perf`).
+  Captures `worker_warmup_ms`, `embed_throughput`,
+  `embed_latency_b1_ms`, `embed_latency_b32_ms`, `sweep_throughput`,
+  `recall_latency_ms`, `db_size_bytes_per_row`. Outputs JSON +
+  markdown under `bench/results/`.
+- **Recall quality benchmarks** (`bench/quality.ts`,
+  `npm run bench:quality`). MRR, Recall@5/@10, Precision@5, nDCG@10
+  over an eval set. Synthesised from `BENCH_TOPICS` if no
+  `bench/eval/eval.json` is provided.
+- **`bench/lib/metrics.ts`** — pure functions: reciprocalRank,
+  recallAtK, precisionAtK, ndcgAtK, aggregate, percentiles. 17 unit
+  tests in `test/bench.metrics.test.ts`.
+- **End-to-end test harness** (`test/e2e/`). `makeFakePi()` faithful
+  `ExtensionAPI` stub; `makeE2EProject()` tmp project + pre-seeded
+  pi-lcm DB; `full-pipeline.test.ts` runs real worker + ONNX + DB,
+  opt-in via `PI_LCM_MEMORY_LIVE_TEST=1`. Coverage: backfill,
+  lcm_recall, lcm_similar, /memory commands, settings panel factory,
+  message_end hook indexing.
+- **Baseline snapshots** committed under `bench/results/` for diff vs.
+  reranker.
+
+### Removed (Phase 6 — housekeeping)
+
+- `_testing` export from `src/indexer.ts` (no consumers).
+- `iter_chunk` trace event in indexer's processBatched loop (was
+  noisy: 2.18M lines / 173 MB on a single freeze pre-fix).
+- `log` alias for `/memory events` (single canonical name).
+- Un-exported orphan helpers in `src/db/connection.ts`
+  (`getOpenDb`, `getOpenCwd`, `getDbPath`) and
+  `src/embeddings/model-registry.ts` (`REGISTRY`).
+
 ### Added
 - Repo scaffolded.
 - PLAN.md with locked architecture decisions (Q1–Q9).

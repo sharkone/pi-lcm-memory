@@ -25,6 +25,11 @@ export interface RecallParams {
   sessionFilter?: string | null;
   after?: string | null;
   before?: string | null;
+  /**
+   * Override the configured rerank flag for this call. Useful for
+   * benchmarks comparing rerank-on/off without touching config.
+   */
+  rerank?: boolean;
 }
 
 export interface RecallHit {
@@ -38,6 +43,8 @@ export interface RecallHit {
   score: number;
   pi_lcm_msg_id: string | null;
   pi_lcm_sum_id: string | null;
+  /** Raw cross-encoder score when reranked; null/undefined otherwise. */
+  rerank_score?: number | null;
 }
 
 export interface RetrieverDeps {
@@ -46,6 +53,10 @@ export interface RetrieverDeps {
   embedder: Embedder;
   bridge: PiLcmBridge;
   rrfK: number;
+  /** Whether to apply the cross-encoder reranker by default. */
+  rerankEnabled?: () => boolean;
+  /** Pool size for the rerank stage (top-N from hybrid is reranked to top-K). */
+  rerankPoolSize?: () => number;
 }
 
 export class Retriever {
@@ -61,8 +72,19 @@ export class Retriever {
     const query = params.query.trim();
     if (!query) return [];
 
-    const lexK = mode === "semantic" ? 0 : k * 4;
-    const semK = mode === "lexical" ? 0 : k * 4;
+    const rerankConfigured =
+      typeof this.deps.rerankEnabled === "function" ? this.deps.rerankEnabled() : false;
+    const wantsRerank = params.rerank ?? rerankConfigured;
+    const poolSize =
+      typeof this.deps.rerankPoolSize === "function"
+        ? Math.max(k, this.deps.rerankPoolSize())
+        : Math.max(k, 30);
+    // When reranking, fetch a wider pool so the cross-encoder has more
+    // candidates. When not, the legacy k*4 widths are sufficient.
+    const breadth = wantsRerank ? poolSize : k * 4;
+
+    const lexK = mode === "semantic" ? 0 : breadth;
+    const semK = mode === "lexical" ? 0 : breadth;
 
     const lex = lexK > 0 ? this.lexicalRanks(query, lexK) : new Map<number, number>();
     const sem = semK > 0 ? await this.semanticRanks(query, semK) : new Map<number, number>();
@@ -70,8 +92,14 @@ export class Retriever {
     const merged = mergeRRF(lex, sem, this.deps.rrfK);
     const sorted = Array.from(merged.entries()).sort((a, b) => b[1] - a[1]);
 
-    const filtered = applyFilters(this.deps.store, sorted, params, k * 2);
-    return filtered.slice(0, k);
+    const filterCap = wantsRerank ? poolSize : k * 2;
+    const filtered = applyFilters(this.deps.store, sorted, params, filterCap);
+
+    if (!wantsRerank || filtered.length <= 1) {
+      return filtered.slice(0, k);
+    }
+
+    return await this.applyRerank(query, filtered, k);
   }
 
   /** "More like this" — KNN over an existing row's vector. */
@@ -99,6 +127,31 @@ export class Retriever {
   }
 
   // ── Internals ──────────────────────────────────────────────────────────────
+
+  /**
+   * Cross-encoder rerank stage. Falls through to hybrid order on failure so
+   * a broken reranker never silently breaks recall.
+   */
+  private async applyRerank(
+    query: string,
+    candidates: RecallHit[],
+    k: number,
+  ): Promise<RecallHit[]> {
+    try {
+      const docs = candidates.map((c) => c.text_full);
+      const scores = await this.deps.embedder.rerank(query, docs);
+      if (scores.length !== candidates.length) {
+        return candidates.slice(0, k);
+      }
+      const reranked = candidates
+        .map((c, i) => ({ ...c, rerank_score: scores[i] ?? Number.NEGATIVE_INFINITY }))
+        .sort((a, b) => (b.rerank_score ?? 0) - (a.rerank_score ?? 0));
+      return reranked.slice(0, k);
+    } catch {
+      // Never let a reranker error fail the whole recall: serve hybrid order.
+      return candidates.slice(0, k);
+    }
+  }
 
   /** Map<vec_rowid, rank-position-zero-based> for FTS5 hits. */
   private lexicalRanks(query: string, limit: number): Map<number, number> {

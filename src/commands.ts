@@ -56,6 +56,8 @@ export async function handleMemoryCommand(
       return printEvents(state, ctx);
     case "worker":
       return printWorker(state, ctx);
+    case "rerank":
+      return doRerank(state, rest, ctx);
     default:
       ctx.ui.notify(`unknown subcommand: ${sub}. Try /memory help.`, "warning");
   }
@@ -71,6 +73,7 @@ function printHelp(ctx: any): void {
       "/memory reindex             — wipe & re-embed everything",
       "/memory clear [--yes]       — drop all embeddings (sweep will rebuild)",
       "/memory model <name>        — change embedding model (triggers reindex)",
+      "/memory rerank on|off       — toggle the cross-encoder reranker",
       "/memory events              — last 20 diagnostic events",
       "/memory settings            — open settings panel",
       "",
@@ -251,5 +254,39 @@ function openSettings(state: CommandState, ctx: any): void {
     state.openSettingsPanel(ctx);
   } else {
     ctx.ui.notify("settings panel unavailable", "warning");
+  }
+}
+
+function doRerank(state: CommandState, rest: string, ctx: any): void {
+  const arg = rest.trim().toLowerCase();
+  if (!state.cwd) {
+    ctx.ui.notify("pi-lcm-memory: cwd unknown; cannot persist setting.", "warning");
+    return;
+  }
+  if (arg !== "on" && arg !== "off") {
+    const cur = state.config.rerank ? "on" : "off";
+    ctx.ui.notify(
+      `pi-lcm-memory rerank: ${cur} (model=${state.config.rerankModel}, pool=${state.config.rerankPoolSize}). Usage: /memory rerank on|off`,
+      "info",
+    );
+    return;
+  }
+  const want = arg === "on";
+  if (want === state.config.rerank) {
+    ctx.ui.notify(`pi-lcm-memory: rerank already ${arg}.`, "info");
+    return;
+  }
+  const next: MemoryConfig = { ...state.config, rerank: want };
+  saveSettings(next, state.settingsScope, state.cwd);
+  state.config = next;
+  state.onConfigChange?.(next);
+  state.diagnostics?.log("rerank_toggle", { rerank: want, scope: state.settingsScope });
+  if (want) {
+    ctx.ui.notify(
+      `pi-lcm-memory: rerank ON (model=${next.rerankModel}, pool=${next.rerankPoolSize}). The reranker pipeline will load on first recall.`,
+      "info",
+    );
+  } else {
+    ctx.ui.notify("pi-lcm-memory: rerank OFF.", "info");
   }
 }

@@ -117,6 +117,21 @@ const ROWS: Row[] = [
     step: 1000,
   },
   { type: "boolean", key: "debugMode", label: "Debug", description: "Verbose logging" },
+  {
+    type: "boolean",
+    key: "rerank",
+    label: "Rerank",
+    description: "Cross-encoder reranker on top of hybrid recall (opt-in)",
+  },
+  {
+    type: "number",
+    key: "rerankPoolSize",
+    label: "Rerank pool",
+    description: "Hybrid candidates fed to the reranker before truncating to top-K",
+    min: 1,
+    max: 200,
+    step: 5,
+  },
 ];
 
 const SCOPE_ROW = 0;

@@ -15,12 +15,16 @@
  *   parent → worker:
  *     { type: 'init', opts: { model, quantize, cacheDir } }
  *     { type: 'embed', id, texts }
+ *     { type: 'init_reranker', opts: { model, quantize } }
+ *     { type: 'rerank', id, query, docs }
  *     { type: 'shutdown' }
  *
  *   worker → parent:
  *     { type: 'progress', payload: { status, file, loaded, total, progress } }
  *     { type: 'loaded', dims, intraOpNumThreads, model }
  *     { type: 'result', id, dims, buffers }   // buffers transferred zero-copy
+ *     { type: 'reranker_loaded', model }
+ *     { type: 'rerank_result', id, scores }
  *     { type: 'error', id?, message, stack? }
  */
 
@@ -73,6 +77,11 @@ let pipe = null;
 let modelName = "";
 let pipeDims = null;
 let intraOpNumThreads = 1;
+
+// Reranker state (separate pipeline, lazy-loaded).
+let rerankerModel = null;
+let rerankerTokenizer = null;
+let rerankerName = "";
 
 // Tell the parent we're alive immediately so it can confirm the worker
 // actually spawned (vs. silently failed to construct).
@@ -178,6 +187,93 @@ async function embedTexts(texts) {
   return arrs;
 }
 
+/**
+ * Initialize the cross-encoder reranker. Loaded separately from the
+ * embedder pipeline so users who don't enable rerank pay no cost.
+ *
+ * Uses AutoTokenizer + AutoModelForSequenceClassification because the
+ * high-level pipeline('text-classification', ...) does not accept text
+ * pairs (query, passage). See the model card for the canonical recipe:
+ *   https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2
+ *
+ * @param {{ model: string, quantize?: string }} opts
+ */
+async function initReranker(opts) {
+  trace("reranker_init_start", { model: opts?.model, quantize: opts?.quantize });
+  const tImport0 = Date.now();
+  const tf = await import("@huggingface/transformers");
+  trace("reranker_init_imported", { ms: Date.now() - tImport0 });
+
+  const fromOpts = {
+    progress_callback: (p) => {
+      try {
+        parentPort.postMessage({ type: "progress", payload: serializeProgress(p) });
+      } catch {
+        // best-effort
+      }
+    },
+    session_options: {
+      intraOpNumThreads,
+      interOpNumThreads: 1,
+      executionMode: "parallel",
+      graphOptimizationLevel: "all",
+    },
+  };
+  if (opts.quantize && opts.quantize !== "auto") {
+    fromOpts.dtype = opts.quantize;
+  }
+
+  const tLoad0 = Date.now();
+  rerankerTokenizer = await tf.AutoTokenizer.from_pretrained(opts.model, fromOpts);
+  rerankerModel = await tf.AutoModelForSequenceClassification.from_pretrained(
+    opts.model,
+    fromOpts,
+  );
+  rerankerName = opts.model;
+  trace("reranker_init_end", { ms: Date.now() - tLoad0 });
+
+  parentPort.postMessage({ type: "reranker_loaded", model: rerankerName });
+}
+
+/**
+ * Score (query, doc) pairs. Returns one raw logit per doc; the parent is
+ * responsible for sorting. Higher = more relevant.
+ *
+ * @param {string} query
+ * @param {string[]} docs
+ * @returns {Promise<number[]>}
+ */
+async function rerankPairs(query, docs) {
+  if (!rerankerModel || !rerankerTokenizer) {
+    throw new Error("reranker not initialized");
+  }
+  if (!Array.isArray(docs) || docs.length === 0) return [];
+  trace("rerank_start", { count: docs.length });
+  const t0 = Date.now();
+
+  const queries = new Array(docs.length).fill(query);
+  const features = rerankerTokenizer(queries, {
+    text_pair: docs,
+    padding: true,
+    truncation: true,
+  });
+  const out = await rerankerModel(features);
+  // The model's logits tensor has shape [batch, 1] for ms-marco-MiniLM
+  // (single relevance score per pair). Defensive: support [batch] too.
+  const logits = out.logits ?? out;
+  const data = logits.data ?? logits;
+  const dims = logits.dims;
+  const scores = [];
+  if (dims && dims.length === 2) {
+    const w = dims[1];
+    for (let i = 0; i < dims[0]; i++) scores.push(data[i * w]);
+  } else {
+    for (let i = 0; i < docs.length; i++) scores.push(data[i]);
+  }
+  trace("rerank_end", { count: docs.length, ms: Date.now() - t0 });
+  return scores;
+}
+
 function serializeProgress(p) {
   if (!p || typeof p !== "object") return null;
   return {
@@ -260,6 +356,12 @@ parentPort.on("message", async (msg) => {
         { type: "result", id, dims: arrs[0]?.length ?? 0, buffers },
         buffers, // transfer (zero-copy)
       );
+    } else if (type === "init_reranker") {
+      await initReranker(msg.opts ?? {});
+    } else if (type === "rerank") {
+      trace("recv_rerank", { id, count: (msg.docs ?? []).length });
+      const scores = await rerankPairs(msg.query ?? "", msg.docs ?? []);
+      parentPort.postMessage({ type: "rerank_result", id, scores });
     } else if (type === "shutdown") {
       trace("shutdown");
       // Allow current frame to flush, then exit cleanly.

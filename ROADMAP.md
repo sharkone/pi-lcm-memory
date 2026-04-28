@@ -169,14 +169,17 @@ the quality lift with numbers.
       via `PI_LCM_MEMORY_LIVE_TEST=1`. Coverage: backfill, lcm_recall,
       lcm_similar, /memory commands, settings panel factory contract,
       message_end hook indexing. 7 tests passing in ~500 ms.
-- [ ] **Capture baseline** — commit `bench/results/{perf,quality}.<sha>.json`
-      so the reranker delta is a diff, not a vibe.
-- [ ] **Cross-encoder reranker** (`Xenova/ms-marco-MiniLM-L-6-v2`) as
-      a second pipeline in the existing worker. Opt-in via
-      `rerank: boolean` config; default off. Lazy-loaded — no cost
-      when off.
-- [ ] **Re-run benchmarks**, document delta in CHANGELOG with concrete
-      numbers. Reranker only ships if quality goes up.
+- [x] **Capture baseline** — `bench/results/{perf,quality}.<sha>.json`
+      committed; reranker delta is a diff, not a vibe.
+- [x] **Cross-encoder reranker** (`Xenova/ms-marco-MiniLM-L-6-v2`)
+      shipped. Second pipeline in the existing worker, opt-in via
+      `rerank: boolean` config (default off, lazy-loaded). Per-call
+      override via `params.rerank`. Falls through to hybrid order on
+      any reranker error. New `/memory rerank on|off` command and
+      two new settings-panel rows.
+- [x] **Re-run benchmarks** — synthetic eval shows MRR 0.364→1.000,
+      Recall@10 0.480→0.993, nDCG@10 0.391→0.996. Live throughput
+      ~2000 (query, doc) pairs/sec on M5 × 8 threads, q8. Shipped.
 
 ---
 
