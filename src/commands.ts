@@ -46,8 +46,6 @@ export async function handleMemoryCommand(
       return doSearch(state, rest, ctx);
     case "reindex":
       return doReindex(state, rest, ctx);
-    case "clear":
-      return doClear(state, rest, ctx);
     case "model":
       return doModel(state, rest, ctx);
     case "settings":
@@ -66,12 +64,9 @@ function printHelp(ctx: any): void {
     [
       "/memory stats               — counts, model, dim, db size",
       "/memory status              — sweep cycles, busy, last error, interval",
-      "/memory worker              — embedder worker state (debug)",
       "/memory search <query>      — ad-hoc lcm_recall",
       "/memory reindex             — wipe & re-embed everything",
-      "/memory clear [--yes]       — drop all embeddings (sweep will rebuild)",
       "/memory model <name>        — change embedding model (triggers reindex)",
-      "/memory events              — last 20 diagnostic events",
       "/memory settings            — open settings panel",
       "",
       "models: " + listModelNames().join(", "),
@@ -196,25 +191,6 @@ function doReindex(state: CommandState, _rest: string, ctx: any): void {
   state.diagnostics?.log("reindex", { trigger: "command" });
   ctx.ui.notify("pi-lcm-memory: cleared. Re-embedding now…", "info");
   state.indexer.kick();
-}
-
-function doClear(state: CommandState, rest: string, ctx: any): void {
-  if (!state.store) {
-    ctx.ui.notify("pi-lcm-memory not initialized.", "warning");
-    return;
-  }
-  const confirmed = /(^|\s)(--yes|-y|--force)\b/.test(rest);
-  if (!confirmed) {
-    ctx.ui.notify(
-      "pi-lcm-memory: /memory clear is destructive. Re-run with --yes to drop all embeddings (sweep will then re-embed from pi-lcm).",
-      "warning",
-    );
-    return;
-  }
-  state.store.clearAll();
-  state.diagnostics?.log("clear", {});
-  ctx.ui.notify("pi-lcm-memory: all embeddings cleared.", "info");
-  state.indexer?.kick();
 }
 
 function doModel(state: CommandState, name: string, ctx: any): void {
