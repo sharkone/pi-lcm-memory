@@ -46,6 +46,10 @@ export interface RetrieverDeps {
   embedder: Embedder;
   bridge: PiLcmBridge;
   rrfK: number;
+  /** Candidate multiplier for FTS5 fetch: lexK = k * lexMult. Default 4. */
+  lexMult?: number;
+  /** Candidate multiplier for KNN fetch: semK = k * semMult. Default 4. */
+  semMult?: number;
 }
 
 export class Retriever {
@@ -61,8 +65,8 @@ export class Retriever {
     const query = params.query.trim();
     if (!query) return [];
 
-    const lexK = mode === "semantic" ? 0 : k * 4;
-    const semK = mode === "lexical" ? 0 : k * 4;
+    const lexK = mode === "semantic" ? 0 : k * (this.deps.lexMult ?? 4);
+    const semK = mode === "lexical" ? 0 : k * (this.deps.semMult ?? 4);
 
     const lex = lexK > 0 ? this.lexicalRanks(query, lexK) : new Map<number, number>();
     const sem = semK > 0 ? await this.semanticRanks(query, semK) : new Map<number, number>();

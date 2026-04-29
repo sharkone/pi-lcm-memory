@@ -52,6 +52,7 @@
     "test:watch": "vitest --dir test",
     "bench:perf": "tsx bench/perf.ts",
     "bench:quality": "tsx bench/quality.ts",
+    "bench:sweep": "tsx bench/sweep.ts",
     "bench": "npm run bench:perf && npm run bench:quality",
     "prepublishOnly": "npm run typecheck && npm test"
   },
