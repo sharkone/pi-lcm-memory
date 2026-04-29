@@ -126,12 +126,10 @@ lcm_similar(messageId, k?)
 /memory status              sweep cycles, busy flag, last error, current interval
 /memory search <query>      ad-hoc recall (same as lcm_recall)
 /memory reindex             wipe all embeddings and re-embed everything
-/memory clear [--yes]       drop embeddings (sweep will rebuild automatically)
-/memory model <name>        switch embedding model (triggers reindex)
-/memory events              last 20 diagnostic events
-/memory worker              embedder + worker thread state (debug)
 /memory settings            open interactive settings panel
 ```
+
+Embedding model and hyperparameters (`rrfK`, `lexMult`, `semMult`) are changed via `/memory settings`.
 
 ---
 
@@ -214,7 +212,7 @@ PI_LCM_MEMORY_TRACE=/path/to/log pi   # explicit path
 
 Both the main thread and the embedder worker write to the same file with `pid`/`src` markers. The log is written with `fs.writeSync` so it survives main-thread freezes — it's the right tool when the TUI hangs and the in-DB diagnostics ring can't be written.
 
-`/memory worker` prints live embedder + worker state without a restart.
+
 
 ---
 

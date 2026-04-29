@@ -6,6 +6,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ## [Unreleased]
 
+### 🗑️ Removed — commands cleanup
+
+- **`/memory clear`** dropped. `reindex` covers the use case without the footgun.
+- **`/memory model`** dropped. Embedding model is now changed via `/memory settings`.
+- **`/memory worker`** and **`/memory events`** demoted to unlisted (still work, absent from help).
+- Dead fields removed from `CommandState`: `cwd`, `settingsScope`, `onConfigChange`.
+
 ### 🔬 Phase 6 — Cross-encoder reranker: evaluated and removed (post-mortem)
 
 We built a complete cross-encoder reranker on top of the hybrid recall

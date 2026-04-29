@@ -24,7 +24,7 @@ index.ts              Extension entry point — wires all modules to Pi events
 src/
   auto-recall.ts      Heuristic trigger: fires lcm_recall on "remember…" etc.
   bridge.ts           Read-only view of pi-lcm's messages + summaries tables
-  commands.ts         /memory dispatcher (stats, search, model, reindex…)
+  commands.ts         /memory dispatcher (stats, status, search, reindex, settings)
   config.ts           Merge env → project → global → defaults into MemoryConfig
   diagnostics.ts      Internal event ring buffer; surfaced by /memory events
   indexer.ts          message_end hook + background sweep loop
