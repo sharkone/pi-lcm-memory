@@ -67,12 +67,7 @@ export default function (pi: ExtensionAPI) {
       diagnostics,
       embedder,
       config,
-      cwd,
-      settingsScope,
       openSettingsPanel: openSettingsPanel,
-      onConfigChange: (cfg) => {
-        config = cfg;
-      },
     };
   }
 

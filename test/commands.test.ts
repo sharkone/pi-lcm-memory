@@ -1,12 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   makeTestDb,
   applyPiLcmSchema,
   setupVecAndMigrate,
-  seedMessage,
   FakeEmbedder,
   type TestDb,
 } from "./helpers.js";
@@ -16,8 +15,6 @@ import { Indexer } from "../src/indexer.js";
 import { Diagnostics } from "../src/diagnostics.js";
 import { handleMemoryCommand, type CommandState } from "../src/commands.js";
 import { DEFAULTS, type MemoryConfig } from "../src/config.js";
-import { isVecLoaded } from "../src/db/vec.js";
-import { SETTINGS_KEY } from "../src/settings.js";
 
 interface NotifyCall {
   msg: string;
@@ -35,7 +32,7 @@ function makeCtx(): { ctx: any; notifies: NotifyCall[] } {
   return { ctx, notifies };
 }
 
-function makeState(t: TestDb, cfg: MemoryConfig, cwd: string): CommandState {
+function makeState(t: TestDb, cfg: MemoryConfig): CommandState {
   const store = new MemoryStore(t.db);
   const bridge = new PiLcmBridge(t.db);
   const fake = new FakeEmbedder(8);
@@ -55,8 +52,6 @@ function makeState(t: TestDb, cfg: MemoryConfig, cwd: string): CommandState {
     diagnostics: diag,
     embedder: fake as any,
     config: { ...cfg },
-    cwd,
-    settingsScope: "project",
     openSettingsPanel: null,
   };
 }
@@ -71,79 +66,17 @@ describe("/memory commands", () => {
     cwd = null;
   });
 
-  it("help lists subcommands and known models", async () => {
+  it("help lists subcommands", async () => {
     t = makeTestDb();
     applyPiLcmSchema(t.db);
     await setupVecAndMigrate(t.db, 8);
     cwd = mkdtempSync(join(tmpdir(), "pi-lcm-mem-cmd-"));
     const { ctx, notifies } = makeCtx();
-    const state = makeState(t, { ...DEFAULTS }, cwd);
+    const state = makeState(t, { ...DEFAULTS });
 
     await handleMemoryCommand(state, undefined, ctx);
     expect(notifies[0]!.msg).toMatch(/\/memory stats/);
-    expect(notifies[0]!.msg).toMatch(/Xenova\/bge-small-en-v1.5/);
-  });
-
-  it("clear without --yes refuses; with --yes clears + kicks indexer", async () => {
-    t = makeTestDb();
-    applyPiLcmSchema(t.db);
-    await setupVecAndMigrate(t.db, 8);
-    if (!isVecLoaded()) return;
-    cwd = mkdtempSync(join(tmpdir(), "pi-lcm-mem-cmd-"));
-    seedMessage(t.db, { id: "m1", conv: "c1", role: "user", text: "hello", ts: 1, seq: 0 });
-    const state = makeState(t, { ...DEFAULTS }, cwd);
-
-    // Backfill so there's something to clear.
-    await state.indexer!.tick();
-    expect(state.store!.stats().indexed).toBe(1);
-
-    const { ctx, notifies } = makeCtx();
-    await handleMemoryCommand(state, "clear", ctx);
-    expect(notifies.at(-1)!.msg).toMatch(/destructive/);
-    expect(state.store!.stats().indexed).toBe(1); // unchanged
-
-    await handleMemoryCommand(state, "clear --yes", ctx);
-    expect(state.store!.stats().indexed).toBe(0);
-    // Diagnostics should have a 'clear' event.
-    const events = state.diagnostics!.recent(5).map((e) => e.event);
-    expect(events).toContain("clear");
-  });
-
-  it("model writes settings + emits diagnostics", async () => {
-    t = makeTestDb();
-    applyPiLcmSchema(t.db);
-    await setupVecAndMigrate(t.db, 8);
-    cwd = mkdtempSync(join(tmpdir(), "pi-lcm-mem-cmd-"));
-    mkdirSync(join(cwd, ".pi"), { recursive: true });
-    const state = makeState(t, { ...DEFAULTS }, cwd);
-
-    const { ctx, notifies } = makeCtx();
-    await handleMemoryCommand(state, "model Xenova/all-MiniLM-L6-v2", ctx);
-
-    expect(state.config.embeddingModel).toBe("Xenova/all-MiniLM-L6-v2");
-    expect(notifies.at(-1)!.msg).toMatch(/Xenova\/all-MiniLM-L6-v2/);
-
-    const settingsPath = join(cwd, ".pi", "settings.json");
-    expect(existsSync(settingsPath)).toBe(true);
-    const json = JSON.parse(readFileSync(settingsPath, "utf8"));
-    expect(json[SETTINGS_KEY].embeddingModel).toBe("Xenova/all-MiniLM-L6-v2");
-
-    const events = state.diagnostics!.recent(5).map((e) => e.event);
-    expect(events).toContain("model_change");
-  });
-
-  it("model with no name shows usage; same model is a no-op", async () => {
-    t = makeTestDb();
-    applyPiLcmSchema(t.db);
-    await setupVecAndMigrate(t.db, 8);
-    cwd = mkdtempSync(join(tmpdir(), "pi-lcm-mem-cmd-"));
-    const state = makeState(t, { ...DEFAULTS }, cwd);
-
-    const { ctx, notifies } = makeCtx();
-    await handleMemoryCommand(state, "model", ctx);
-    expect(notifies.at(-1)!.msg).toMatch(/usage/);
-    await handleMemoryCommand(state, `model ${DEFAULTS.embeddingModel}`, ctx);
-    expect(notifies.at(-1)!.msg).toMatch(/already on/);
+    expect(notifies[0]!.msg).toMatch(/\/memory settings/);
   });
 
   it("status reports interval/idleStreak/indexed", async () => {
@@ -151,7 +84,7 @@ describe("/memory commands", () => {
     applyPiLcmSchema(t.db);
     await setupVecAndMigrate(t.db, 8);
     cwd = mkdtempSync(join(tmpdir(), "pi-lcm-mem-cmd-"));
-    const state = makeState(t, { ...DEFAULTS }, cwd);
+    const state = makeState(t, { ...DEFAULTS });
 
     const { ctx, notifies } = makeCtx();
     await handleMemoryCommand(state, "status", ctx);
@@ -167,7 +100,7 @@ describe("/memory commands", () => {
     applyPiLcmSchema(t.db);
     await setupVecAndMigrate(t.db, 8);
     cwd = mkdtempSync(join(tmpdir(), "pi-lcm-mem-cmd-"));
-    const state = makeState(t, { ...DEFAULTS }, cwd);
+    const state = makeState(t, { ...DEFAULTS });
 
     const { ctx, notifies } = makeCtx();
     await handleMemoryCommand(state, "events", ctx);
@@ -184,7 +117,7 @@ describe("/memory commands", () => {
     applyPiLcmSchema(t.db);
     await setupVecAndMigrate(t.db, 8);
     cwd = mkdtempSync(join(tmpdir(), "pi-lcm-mem-cmd-"));
-    const state = makeState(t, { ...DEFAULTS }, cwd);
+    const state = makeState(t, { ...DEFAULTS });
 
     const { ctx, notifies } = makeCtx();
     await handleMemoryCommand(state, "frobnicate", ctx);

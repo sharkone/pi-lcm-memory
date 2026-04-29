@@ -1,5 +1,5 @@
 /**
- * /memory command dispatcher: stats, search, model, reindex, clear, status, settings.
+ * /memory command dispatcher: stats, search, reindex, status, settings.
  */
 
 import type { MemoryStore } from "./db/store.js";
@@ -8,8 +8,6 @@ import type { Indexer } from "./indexer.js";
 import type { MemoryConfig } from "./config.js";
 import type { Diagnostics } from "./diagnostics.js";
 import type { Embedder } from "./embeddings/embedder.js";
-import { listModelNames } from "./embeddings/model-registry.js";
-import { saveSettings, type SettingsScope } from "./settings.js";
 
 export interface CommandState {
   store: MemoryStore | null;
@@ -18,11 +16,7 @@ export interface CommandState {
   diagnostics: Diagnostics | null;
   embedder: Embedder | null;
   config: MemoryConfig;
-  cwd: string | null;
-  settingsScope: SettingsScope;
   openSettingsPanel: ((ctx: any) => void) | null;
-  /** Hook so the host can update its config snapshot when /memory model writes. */
-  onConfigChange?: (cfg: MemoryConfig) => void;
 }
 
 export async function handleMemoryCommand(
@@ -46,8 +40,6 @@ export async function handleMemoryCommand(
       return doSearch(state, rest, ctx);
     case "reindex":
       return doReindex(state, rest, ctx);
-    case "model":
-      return doModel(state, rest, ctx);
     case "settings":
       return openSettings(state, ctx);
     case "events":
@@ -66,10 +58,7 @@ function printHelp(ctx: any): void {
       "/memory status              — sweep cycles, busy, last error, interval",
       "/memory search <query>      — ad-hoc lcm_recall",
       "/memory reindex             — wipe & re-embed everything",
-      "/memory model <name>        — change embedding model (triggers reindex)",
       "/memory settings            — open settings panel",
-      "",
-      "models: " + listModelNames().join(", "),
     ].join("\n"),
     "info",
   );
@@ -191,35 +180,6 @@ function doReindex(state: CommandState, _rest: string, ctx: any): void {
   state.diagnostics?.log("reindex", { trigger: "command" });
   ctx.ui.notify("pi-lcm-memory: cleared. Re-embedding now…", "info");
   state.indexer.kick();
-}
-
-function doModel(state: CommandState, name: string, ctx: any): void {
-  if (!name.trim()) {
-    ctx.ui.notify(
-      "usage: /memory model <name>. known: " + listModelNames().join(", "),
-      "warning",
-    );
-    return;
-  }
-  if (!state.cwd) {
-    ctx.ui.notify("pi-lcm-memory: cwd unknown; cannot persist setting.", "warning");
-    return;
-  }
-  const newModel = name.trim();
-  if (newModel === state.config.embeddingModel) {
-    ctx.ui.notify(`pi-lcm-memory: already on ${newModel}.`, "info");
-    return;
-  }
-  const next: MemoryConfig = { ...state.config, embeddingModel: newModel };
-  saveSettings(next, state.settingsScope, state.cwd);
-  state.config = next;
-  state.onConfigChange?.(next);
-  state.diagnostics?.log("model_change", { from: state.config.embeddingModel, to: newModel, scope: state.settingsScope });
-  ctx.ui.notify(
-    `pi-lcm-memory: model set to ${newModel} (${state.settingsScope}).\n` +
-      `Restart Pi to load it. Existing embeddings will be discarded and re-embedded on next session.`,
-    "info",
-  );
 }
 
 function openSettings(state: CommandState, ctx: any): void {
