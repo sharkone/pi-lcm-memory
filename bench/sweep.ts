@@ -27,10 +27,11 @@ import { runMigrations } from "../src/db/schema.js";
 import { MemoryStore } from "../src/db/store.js";
 import { ensureVecLoaded, isVecLoadedFor } from "../src/db/vec.js";
 import { PiLcmBridge } from "../src/bridge.js";
+import { Indexer } from "../src/indexer.js";
 import { Retriever } from "../src/retrieval.js";
-import type { InsertArgs } from "../src/db/store.js";
+import { DEFAULTS } from "../src/config.js";
 
-import { makeBenchDb, seedMessages, BENCH_TOPICS } from "./lib/fixtures.js";
+import { makeBenchDb, BENCH_TOPICS } from "./lib/fixtures.js";
 import { aggregate, type QueryEval } from "./lib/metrics.js";
 import { buildRealEvalSet } from "./lib/real-eval.js";
 
@@ -105,34 +106,38 @@ async function main() {
   const db    = bench.db;
   const store = new MemoryStore(db);
   const bridge = new PiLcmBridge(db);
+  const conv   = "sweep-conv";
+  const now    = 1700000000;
 
-  // Seed eval messages into the pi-lcm messages table, then embed + store
-  const seeded = seedMessages(db, {
-    count: evalSet.messages.length,
-    conversationId: "sweep",
-    seed: 0xC0FFEE,
+  // Insert eval messages into the pi-lcm messages table so the bridge can see them
+  db.prepare(
+    `INSERT OR IGNORE INTO conversations(id, session_id, cwd, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+  ).run(conv, "s-" + conv, "/x", "2026-04-20T10:00:00Z", "2026-04-20T11:00:00Z");
+  const insertMsg = db.prepare(
+    `INSERT INTO messages(id, conversation_id, role, content_text, timestamp, seq) VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  db.transaction(() => {
+    let seq = 0;
+    for (const m of evalSet.messages) {
+      insertMsg.run(m.id, conv, m.role ?? "user", m.text, now + seq, seq);
+      seq++;
+    }
+  })();
+
+  // Use the indexer's sweep (batches of 32) to embed everything
+  const indexer = new Indexer({
+    store,
+    embedder: embedder as never,
+    bridge,
+    config: { ...DEFAULTS, indexMessages: true, indexSummaries: false, skipToolIO: true },
+    conversationId: () => conv,
+    sessionStartedAt: () => now,
   });
-
-  // Map seeded row ids back to eval message ids for embedding
-  const texts   = seeded.map((r) => r.text);
-  const vectors = await embedder.embed(texts);
-
-  const insertItems: InsertArgs[] = seeded.map((r, i) => ({
-    pi_lcm_msg_id:   r.id,
-    pi_lcm_sum_id:   null,
-    source_kind:     "message" as const,
-    role:            r.role,
-    depth:           null,
-    conversation_id: "sweep",
-    session_started: Math.floor(Date.now() / 1000),
-    text_full:       r.text,
-    snippet:         r.text.slice(0, 200),
-    content_hash:    r.id,
-    embedding:       vectors[i]!,
-    model_name:      MODEL,
-    model_dims:      dims,
-  }));
-  store.insertBatch(insertItems);
+  console.log("  indexing eval corpus...");
+  const t0ingest = Date.now();
+  await indexer.tick();
+  console.log(`  indexed ${store.stats().indexed} rows in ${Date.now() - t0ingest}ms`);
+  console.log("");
 
   // Run the grid
   const results: SweepResult[] = [];

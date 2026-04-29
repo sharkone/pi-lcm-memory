@@ -199,6 +199,8 @@ export default function (pi: ExtensionAPI) {
       embedder,
       bridge,
       rrfK: config.rrfK,
+      lexMult: config.lexMult,
+      semMult: config.semMult,
     });
 
     sessionStartedAt = Math.floor(Date.now() / 1000);

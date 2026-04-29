@@ -35,6 +35,8 @@ export interface MemoryConfig {
   autoRecallTokenBudget: number;
   recallDefaultTopK: number;
   rrfK: number;
+  lexMult: number;
+  semMult: number;
   sweepIntervalMs: number;
   modelCacheDir: string | null;
   debugMode: boolean;
@@ -58,7 +60,9 @@ export const DEFAULTS: MemoryConfig = {
   autoRecallTopK: 5,
   autoRecallTokenBudget: 600,
   recallDefaultTopK: 10,
-  rrfK: 60,
+  rrfK: 20,
+  lexMult: 4,
+  semMult: 16,
   sweepIntervalMs: 30_000,
   modelCacheDir: null,
   debugMode: false,
@@ -169,6 +173,8 @@ export function resolveConfig(ctx: ResolveContext = {}): MemoryConfig {
       100,
     ),
     rrfK: clamp(projectMem.rrfK ?? globalMem.rrfK ?? DEFAULTS.rrfK, 1, 1000),
+    lexMult: clamp(projectMem.lexMult ?? globalMem.lexMult ?? DEFAULTS.lexMult, 1, 32),
+    semMult: clamp(projectMem.semMult ?? globalMem.semMult ?? DEFAULTS.semMult, 1, 32),
     sweepIntervalMs: clamp(
       envInt("PI_LCM_MEMORY_SWEEP_MS") ?? projectMem.sweepIntervalMs ?? globalMem.sweepIntervalMs ?? DEFAULTS.sweepIntervalMs,
       2_000,

@@ -38,7 +38,7 @@ describe("config.resolveConfig", () => {
     expect(cfg.enabled).toBe(true);
     expect(cfg.embeddingModel).toBe(DEFAULTS.embeddingModel);
     expect(cfg.autoRecall).toBe("heuristic");
-    expect(cfg.rrfK).toBe(60);
+    expect(cfg.rrfK).toBe(20);
   });
 
   it("env overrides apply", () => {
