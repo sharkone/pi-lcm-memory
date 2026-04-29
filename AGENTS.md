@@ -47,7 +47,7 @@ src/
   tools/
     lcm-recall.ts     lcm_recall tool definition
     lcm-similar.ts    lcm_similar tool definition
-test/                 Vitest test suite (~60 tests, all in-process)
+test/                 Vitest test suite (~82 tests, all in-process)
 bench/                perf.ts + quality.ts benchmarks (run manually)
 ```
 
@@ -61,7 +61,8 @@ npm run test:watch    # vitest in watch mode
 npm run typecheck     # tsc --noEmit — always run before committing
 npm run bench:perf    # embedding throughput benchmark
 npm run bench:quality # retrieval quality benchmark
-npm run bench         # both benchmarks
+npm run bench:sweep   # hyperparameter grid sweep (rrfK × lexMult × semMult)
+npm run bench         # perf + quality (not sweep)
 ```
 
 `prepublishOnly` runs `typecheck` then `test` — both must pass before
@@ -129,6 +130,10 @@ Key env overrides: `PI_LCM_MEMORY_ENABLED`, `PI_LCM_MEMORY_DB_DIR`,
 `PI_LCM_MEMORY_MODEL`, `PI_LCM_MEMORY_QUANTIZE`, `PI_LCM_MEMORY_SWEEP_MS`,
 `PI_LCM_MEMORY_DEBUG`.
 
+Sweep-tuned defaults (from `bench/sweep.ts` run against real data):
+`rrfK=20`, `lexMult=4`, `semMult=16`. All three are exposed as settings keys
+and clamped at runtime (`rrfK` 1–1000, `lexMult`/`semMult` 1–32).
+
 ---
 
 ## Testing notes
@@ -146,10 +151,10 @@ Key env overrides: `PI_LCM_MEMORY_ENABLED`, `PI_LCM_MEMORY_DB_DIR`,
 ## Gotchas
 
 - **Dimension mismatch on model change.** Switching `embeddingModel` triggers
-  a reindex because `memory_vec` is typed to a fixed float dimension. The
-  `/memory model <name>` command handles this automatically. If you add a new
-  model to `src/embeddings/model-registry.ts`, make sure its dimension is
-  correct or the sqlite-vec insert will throw.
+  a reindex because `memory_vec` is typed to a fixed float dimension. Change
+  the model via `/memory settings` (TUI panel). If you add a new model to
+  `src/embeddings/model-registry.ts`, make sure its dimension is correct or
+  the sqlite-vec insert will throw.
 
 - **`sqlite-vec` version pinned.** `better-sqlite3` and `sqlite-vec` must stay
   in sync with the native binaries in `node_modules`. Don't bump either
@@ -164,3 +169,7 @@ Key env overrides: `PI_LCM_MEMORY_ENABLED`, `PI_LCM_MEMORY_DB_DIR`,
 - **`session_before_compact` timing.** Summaries are written by pi-lcm during
   compaction. The indexer sweep picks them up on the next tick; they are not
   embedded synchronously at compaction time.
+
+- **`lcm_recall` returns full UUIDs.** The `source` field in each hit contains
+  the complete `pi_lcm_sum_id` or `pi_lcm_msg_id`. Pass these directly to
+  `lcm_expand(summary_id)` — do not truncate them.
