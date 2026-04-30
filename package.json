@@ -1,6 +1,6 @@
 {
   "name": "pi-lcm-memory",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Persistent cross-session semantic memory for Pi — a hybrid (FTS5 + vector) recall layer on top of pi-lcm.",
   "type": "module",
   "license": "MIT",

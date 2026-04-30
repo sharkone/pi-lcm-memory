@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org/)
 
+## [1.0.1] — 2026-04-29
+
+> Patch release — primer bugfix + docs sync. Same as 1.0.0 was intended to be.
+
 ## [1.0.0] — 2026-04-29
 
 ### 🐛 Fixed — session-start primer
