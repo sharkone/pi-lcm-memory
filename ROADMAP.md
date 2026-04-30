@@ -109,14 +109,19 @@ We built a complete reranker (`Xenova/ms-marco-MiniLM-L-6-v2`) and ran it agains
 
 ---
 
-## 📦 Publishing
+## 📦 Publishing — v1.0.0 (2026-04-29)
 
-- [ ] **Bump to v1.0.0** — the extension has been running stably in production; `0.0.1` undersells it.
-- [ ] **`npm publish`** — Pi packages are plain npm packages. The `pi-package` keyword is already in `package.json`, which is all that's needed for discovery on [npmjs.com](https://www.npmjs.com/search?q=keywords%3Api-package) and `pi install npm:pi-lcm-memory`. Pre-publish checklist:
-  - `prepublishOnly` runs `typecheck` + `test` (already wired)
-  - Verify `files` in `package.json` includes everything needed at runtime
-  - Tag the release commit (`git tag v1.0.0`)
-  - Announce on the Pi Discord (`#packages` channel)
+- [x] **Bumped to v1.0.0** — tagged `v1.0.0`, committed.
+- [x] `prepublishOnly` runs `typecheck` + `test` (91 tests, all green)
+- [x] `files` in `package.json` verified
+- [x] `git tag v1.0.0`
+- [ ] **`npm publish`** — pending `npm login`. Run:
+  ```sh
+  npm login
+  npm publish
+  git push && git push --tags
+  ```
+- [ ] Announce on the Pi Discord (`#packages` channel)
 
 ---
 

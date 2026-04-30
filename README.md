@@ -142,7 +142,7 @@ Resolution order: **env vars → project → global → defaults**.
 |-----|---------|-------------|
 | `enabled` | `true` | Master switch. Auto-disables if pi-lcm is disabled. |
 | `embeddingModel` | `Xenova/bge-small-en-v1.5` | Any Transformers.js feature-extraction model. |
-| `embeddingQuantize` | `auto` | `auto` / `fp32` / `fp16` / `q8` / `int8` / `q4` |
+| `embeddingQuantize` | `q8` | `auto` / `fp32` / `fp16` / `q8` / `int8` / `q4` |
 | `indexMessages` | `true` | Embed user/assistant turns. |
 | `indexSummaries` | `true` | Embed pi-lcm DAG summaries. |
 | `skipToolIO` | `true` | Skip tool call/result content (FTS5 still covers these). |
@@ -152,7 +152,9 @@ Resolution order: **env vars → project → global → defaults**.
 | `autoRecallTopK` | `5` | Hits injected on auto-recall. |
 | `autoRecallTokenBudget` | `600` | Hard token cap on injected recall block. |
 | `recallDefaultTopK` | `10` | Default `k` for `lcm_recall`. |
-| `rrfK` | `60` | Reciprocal Rank Fusion constant. |
+| `rrfK` | `20` | Reciprocal Rank Fusion constant (sweep-tuned). |
+| `lexMult` | `4` | FTS5 candidate breadth multiplier (sweep-tuned). |
+| `semMult` | `16` | Vector candidate breadth multiplier (sweep-tuned). |
 | `sweepIntervalMs` | `30000` | Base sweep period (backs off ×2 up to 5 min on idle). |
 | `modelCacheDir` | `null` | Override model weight cache directory. |
 | `debugMode` | `false` | Verbose notifications. |
@@ -191,7 +193,7 @@ All embedding work runs in a **dedicated worker thread** — the Pi TUI is never
    - Run sqlite-vec kNN over `memory_vec` → ranked list
    - Merge with **Reciprocal Rank Fusion** (RRF, k=60)
 
-3. **Primer** — on `session_start`, render up to 5 recent D≥1 summaries as a `## Prior context` block (≤300 tokens)
+3. **Primer** — at session start, render up to 5 recent D≥1 summaries into a `## Project memory` block (≤300 tokens). Shows a one-line notification to the user (`[memory] N prior sessions; last on DATE`) and injects the full block into Claude's context on the first turn
 
 4. **Auto-recall** — a regex listener on each user turn (`/remember|earlier|previously|like last time|.../i`) injects a `## Recall` block into the current turn's system context
 
@@ -223,7 +225,7 @@ git clone git@github.com:sharkone/pi-lcm-memory.git
 cd pi-lcm-memory
 npm install
 
-npm test              # 64 vitest tests, ~500 ms
+npm test              # 91 vitest tests, ~500 ms
 npm run typecheck     # tsc --noEmit
 npm run bench         # perf + quality benchmarks (needs a live pi-lcm DB)
 

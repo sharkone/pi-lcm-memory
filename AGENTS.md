@@ -47,7 +47,7 @@ src/
   tools/
     lcm-recall.ts     lcm_recall tool definition
     lcm-similar.ts    lcm_similar tool definition
-test/                 Vitest test suite (~82 tests, all in-process)
+test/                 Vitest test suite (~91 tests, all in-process)
 bench/                perf.ts + quality.ts benchmarks (run manually)
 ```
 
