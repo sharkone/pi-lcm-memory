@@ -49,6 +49,7 @@ export default function (pi: ExtensionAPI) {
   let sessionStartedAt: number | null = null;
   let settingsScope: SettingsScope = "global";
   let primerEmitted = false;
+  let cachedPrimerText: string | null = null;
   let modelDownloadAnnounced = false;
 
   const getStore = () => store;
@@ -200,7 +201,21 @@ export default function (pi: ExtensionAPI) {
 
     sessionStartedAt = Math.floor(Date.now() / 1000);
     primerEmitted = false;
+    cachedPrimerText = null;
     modelDownloadAnnounced = false;
+
+    // Render primer now (while ctx.ui is available) so the user sees it on
+    // session start, and cache it for injection into Claude's context on the
+    // first turn.
+    if (config.primer) {
+      const currentConvId = bridge.newestConvId();
+      const text = renderPrimer({ bridge, topK: config.primerTopK, enabled: true, currentConvId });
+      if (text) {
+        cachedPrimerText = text;
+        const brief = text.split("\n").find(l => l && !l.startsWith("#")) ?? "";
+        ctx.ui?.notify?.(`[memory] ${brief}`, "info");
+      }
+    }
 
     diagnostics.log("session_start", {
       model: config.embeddingModel,
@@ -240,6 +255,7 @@ export default function (pi: ExtensionAPI) {
     conversationId = null;
     sessionStartedAt = null;
     primerEmitted = false;
+    cachedPrimerText = null;
     modelDownloadAnnounced = false;
     closeDb();
   }
@@ -324,12 +340,9 @@ export default function (pi: ExtensionAPI) {
       const messages: any[] = Array.isArray(event?.messages) ? event.messages : [];
       const additions: any[] = [];
 
-      if (config.primer && !primerEmitted && bridge) {
-        const text = renderPrimer({ bridge, topK: config.primerTopK, enabled: true });
-        if (text) {
-          additions.push({ role: "system", content: [{ type: "text", text }] });
-          primerEmitted = true;
-        }
+      if (config.primer && !primerEmitted && cachedPrimerText) {
+        additions.push({ role: "system", content: [{ type: "text", text: cachedPrimerText }] });
+        primerEmitted = true;
       }
 
       const lastUser = lastUserText(messages);

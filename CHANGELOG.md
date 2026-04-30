@@ -4,9 +4,27 @@ All notable changes to this project will be documented in this file.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org/)
 
-## [Unreleased]
+## [1.0.0] — 2026-04-29
 
-### 🗑️ Removed — commands cleanup
+### 🐛 Fixed — session-start primer
+
+- **Primer was invisible to the user.** It was injected only as a silent
+  system message into Claude's context. The `context` event doesn't expose
+  `ctx.ui`, so the notify call silently no-oped. Primer is now rendered
+  inside `initSession` (where `ctx.ui` is confirmed available), shown to the
+  user via `ctx.ui.notify`, and cached for injection into Claude's context on
+  the first turn.
+- **Off-by-one in session count and "last on" date.** `totalSessions()` and
+  `lastSessionStart()` queried all rows in `conversations`, including the
+  current session. On a first-ever session this produced "1 prior session;
+  last on today" when there were zero prior sessions. Both methods now accept
+  an optional `excludeId`; `newestConvId()` provides the current session's id
+  at startup so it is excluded from all primer counts and date calculations.
+- **11 new tests** covering `newestConvId`, `totalSessions(excludeId)`,
+  `lastSessionStart(excludeId)`, primer-without-summaries, and plural session
+  wording. Total: 91 passing (was 80).
+
+
 
 - **`/memory clear`** dropped. `reindex` covers the use case without the footgun.
 - **`/memory model`** dropped. Embedding model is now changed via `/memory settings`.

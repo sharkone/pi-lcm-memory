@@ -194,18 +194,37 @@ export class PiLcmBridge {
       .all(minDepth, limit) as PiLcmSummary[];
   }
 
-  totalSessions(): number {
+  totalSessions(excludeId: string | null = null): number {
     if (!this.hasConversations) return 0;
+    if (excludeId) {
+      const r = this.db.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id != ?").get(excludeId) as { n: number };
+      return r.n;
+    }
     const r = this.db.prepare("SELECT COUNT(*) AS n FROM conversations").get() as { n: number };
     return r.n;
   }
 
-  lastSessionStart(): string | null {
+  lastSessionStart(excludeId: string | null = null): string | null {
     if (!this.hasConversations) return null;
+    if (excludeId) {
+      const r = this.db
+        .prepare("SELECT MAX(created_at) AS at FROM conversations WHERE id != ?")
+        .get(excludeId) as { at: string | null };
+      return r.at;
+    }
     const r = this.db
       .prepare("SELECT MAX(created_at) AS at FROM conversations")
       .get() as { at: string | null };
     return r.at;
+  }
+
+  /** ID of the most recently created conversation — used to exclude the current session from primer counts. */
+  newestConvId(): string | null {
+    if (!this.hasConversations) return null;
+    const r = this.db
+      .prepare("SELECT id FROM conversations ORDER BY created_at DESC LIMIT 1")
+      .get() as { id: string } | undefined;
+    return r?.id ?? null;
   }
 
   /** Best-effort capture of the conversation pi-lcm just wrote into. */

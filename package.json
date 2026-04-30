@@ -1,6 +1,6 @@
 {
   "name": "pi-lcm-memory",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "Persistent cross-session semantic memory for Pi — a hybrid (FTS5 + vector) recall layer on top of pi-lcm.",
   "type": "module",
   "license": "MIT",
@@ -48,8 +48,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --dir test",
-    "test:watch": "vitest --dir test",
+    "test": "vitest run test/",
+    "test:watch": "vitest test/",
     "bench:perf": "tsx bench/perf.ts",
     "bench:quality": "tsx bench/quality.ts",
     "bench:sweep": "tsx bench/sweep.ts",

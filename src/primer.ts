@@ -11,14 +11,16 @@ export interface PrimerDeps {
   bridge: PiLcmBridge;
   topK: number;
   enabled: boolean;
+  currentConvId?: string | null;
 }
 
 export function renderPrimer(deps: PrimerDeps): string | null {
   if (!deps.enabled) return null;
-  const sessions = deps.bridge.totalSessions();
+  const excludeId = deps.currentConvId ?? null;
+  const sessions = deps.bridge.totalSessions(excludeId);
   if (sessions <= 0) return null;
 
-  const last = deps.bridge.lastSessionStart();
+  const last = deps.bridge.lastSessionStart(excludeId);
   const lastDate = last ? last.slice(0, 10) : "—";
 
   const summaries = deps.bridge.recentSummaries(deps.topK, 1);
